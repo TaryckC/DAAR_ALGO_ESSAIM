@@ -84,13 +84,13 @@ public class BrainCanevas extends Brain {
         // No current task, decide next action
     if (detectFront().getObjectType() == IFrontSensorResult.Types.WALL) {
         // Try to determine which way to turn
+
         currentTasks.add(Task.CLOSE_DISTANCE);
         currentTasks.add(Task.TURN_RIGHT);
         callNextTask();
     } else {
         move();
     }
-
   }
 
   // LONGEMENT DES MURS
