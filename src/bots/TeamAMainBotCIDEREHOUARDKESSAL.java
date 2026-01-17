@@ -16,6 +16,8 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
     private  static final String MSG_ENEMY_FOUND = "ENEMY_MARKED";
     private static final String READY_TO_ATTACK_MESSAGE = "READY_TO_ATTACK";
+    private static final String FIGHTINHG_ENEMY_MESSAGE = "FIGHTING_ENEMY";
+    private static final String NOT_FIGHTING_ENEMY_MESSAGE = "NO_ENEMY_DETECTED";
 
     private int alliedReadyToAttack = 0;
 
@@ -38,6 +40,11 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             this.targetWaitingSteps = targetWaitingSteps;
         }
 
+        String allyId;
+
+        TaskAttribute(String allyId) {
+            this.allyId = allyId;
+        }
         public boolean isTargetWaitingStepsReached() {
             return currentStep >= targetWaitingSteps;
         }
@@ -96,10 +103,10 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         HEAD_TOWARD_SECONDARY_ENEMY_AT_CLOSE_RANGE,
         // ajout pour mise en position (rendez-vous)
         GET_INTO_FORMATION, WAITING_FOR_ALLY_STATUS, GO_AROUND_OBJECT, TURN,
-        MOVE_A_BIT, COVER_AREA, SHOOT_AND_ADVANCE;
+        MOVE_A_BIT, COVER_AREA, SHOOT_AND_ADVANCE, SHOOT_AND_HELP;
     }
 
-    private static final double TURN_HYSTERESIS = 0.05;
+    private static final double TURN_HYSTERESIS = 0.02;
     private static final double SHOOTING_RANGE_OFFSET = 10.0;
     private static final double ANGLEPRECISION = 0.2;
     private final static double HEADING_PRECISION = 0.01;
@@ -188,6 +195,9 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         if (!currentTasks.isEmpty()) {
             switch (currentTasks.get(0)) { // replaced getFirst() -> get(0)
                 // TODO : Find a way to merge these similar tasks
+                case SHOOT_AND_HELP :
+                    shootAndHelp();
+                    return true;
                 case SHOOT_AND_ADVANCE:
                     shootAndAdvance();
                     return true;
@@ -297,6 +307,23 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         return Math.abs(Math.sin(getHeading() - target)) < HEADING_PRECISION;
     }
 
+    private void shootAndHelp() {
+        // Try to regroup with allied that sent the message
+        // While shooting at enemies
+        ArrayList<IRadarResult> objects = this.detectRadar();
+        for (IRadarResult object : objects) {
+            if (object.getObjectType() == IRadarResult.Types.OpponentMainBot ||
+                    object.getObjectType() == IRadarResult.Types.OpponentSecondaryBot) {
+                double direction = object.getObjectDirection();
+                double distance = object.getObjectDistance();
+                myFire(direction, distance);
+                return;
+            }
+        }
+        // No enemy or bullet detected, regroup
+        headTowardCoord();
+    }
+
     private boolean closeDistance() {
         if (currentTaskAttributes.isEmpty()) {
             this.currentTaskAttributes.add(new TaskAttribute());
@@ -356,6 +383,10 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 minDistance = currentDistance;
                 nearestEnemy = enemy;
             }
+        }
+        if (nearestEnemy != null) {
+            // No nearest enemy found
+            broadcast(NOT_FIGHTING_ENEMY_MESSAGE + ";" + myID);
         }
         return nearestEnemy;
     }
@@ -433,16 +464,52 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             return true;
         }
 
+        if (parts[0].equals(FIGHTINHG_ENEMY_MESSAGE) && parts.length == 4) {
+            try {
+                double enemyX = Double.parseDouble(parts[1]);
+                double enemyY = Double.parseDouble(parts[2]);
+                String reportingAllyID = parts[3];
+                // If no enemy detected, head toward the reported coordinates
+                ArrayList<IRadarResult> objects = this.detectRadar();
+                IRadarResult nearestEnemy = getNearestEnemy(objects, 0);
+                if (nearestEnemy == null) {
+                    sendLogMessage("Ally reported enemy at (" + enemyX + ", " + enemyY + "). Heading there.");
+                    if (currentTasks.getFirst() == Task.SHOOT_AND_HELP) {
+                        callNextTask();
+                    }
+                    targetX = enemyX;
+                    targetY = enemyY;
+                    currentTasks.clear();
+                    currentTaskAttributes.clear();
+                    currentTasks.addFirst(Task.SHOOT_AND_HELP);
+                    currentTaskAttributes.addFirst(new TaskAttribute(reportingAllyID));
+                    return true;
+                }
+            } catch (NumberFormatException e) {
+                sendLogMessage("Invalid fighting enemy message format.");
+            }
+        }
+
+        if (parts[0] == NOT_FIGHTING_ENEMY_MESSAGE && parts.length == 2) {
+            String reportingAllyID = parts[1];
+            // If currently in SHOOT_AND_HELP task targeting this ally, stop it
+            if (currentTasks.getFirst() == Task.SHOOT_AND_HELP) {
+                TaskAttribute currentTaskAttr = currentTaskAttributes.getFirst();
+                if (currentTaskAttr.allyId.equals(reportingAllyID)) {
+                    currentTaskAttributes.clear();
+                    currentTasks.clear();
+                    currentTasks.addFirst(Task.SHOOT_AND_ADVANCE);
+                }
+            }
+        }
         return false;
     }
 
     private void shootAndAdvance() {
         // Try to attack nearest enemy
         IRadarResult nearestEnemy = getNearestEnemy(detectRadar(), 0);
-        if (nearestEnemy != null) {
-            // Shoot
-            double direction = nearestEnemy.getObjectDirection();
-            fire(direction);
+        if (attackNearestEnemy()) {
+            return;
         }
         else {
 
@@ -450,42 +517,95 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             boolean wallAhead = detectFront().getObjectType() == IFrontSensorResult.Types.WALL;
             if (wallAhead) {
                 sendLogMessage("Wall Ahead.");
-                // Checking heading direction to turn away from wall
                 double heading = getHeading();
-                double targetHeading = heading - Math.PI;
-                // If heading between 0 and PI turn left Otherwise turn right
+
+                // Normaliser heading dans [0, 2π]
+                while (heading < 0) heading += 2 * Math.PI;
+                while (heading >= 2 * Math.PI) heading -= 2 * Math.PI;
+
+                double targetHeading;
                 if (heading < Math.PI / 2) {
-                    // Face vers l'est (0), tourner vers le sud (PI/2) ou nord (3*PI/2)
-                    System.out.println("Turning south");
-                    targetHeading = 3 * Math.PI / 2;
+                    // Face vers l'est (0), tourner vers le sud (π/2)
+                    targetHeading = -Math.PI / 2;
+                    System.out.println("Facing East, turning South");
                 } else if (heading < Math.PI) {
-                    // Face vers le sud-est, tourner vers l'ouest (PI) ou est (0)
-                    System.out.println("Turning west");
-                    targetHeading = 0;
+                    // Face vers le sud (π/2), tourner vers l'ouest (π)
+                    targetHeading = Math.PI/2;
+                    System.out.println("Facing South, turning West");
                 } else if (heading < 3 * Math.PI / 2) {
-                    // Face vers l'ouest, tourner vers le nord (PI/2)
-                    System.out.println("Turning north");
-                    targetHeading = Math.PI / 2;
+                    // Face vers l'ouest (π), tourner vers le nord (3π/2)
+                    targetHeading = -Math.PI;
+                    System.out.println("Facing West, turning North");
                 } else {
-                    // Face vers le nord-ouest, tourner vers l'est (0) ou sud (PI)
-                    System.out.println("Turning east");
-                    targetHeading = Math.PI;
+                    // Face vers le nord (3π/2 à 2π), tourner vers l'est (0)
+                    targetHeading = 0;
+                    System.out.println("Facing North, turning East");
                 }
-                //System.out.println("Heading: " + heading + " -> Target heading: " + targetHeading);
-                // Turn until perpendicular to wall
+
+                System.out.println("Heading (normalized): " + heading + " -> Target: " + targetHeading);
                 currentTasks.addFirst(Task.TURN);
                 currentTaskAttributes.addFirst(new TaskAttribute(targetHeading));
                 return;
             }
 
+
+
             // Advance and shoot
             shootAndAdvanceCounter += 1;
             if (shootAndAdvanceCounter % 2 == 0) {
-                fire(getHeading() + (Math.random() - 0.5) * Math.PI / 6);
+                myFire(getHeading() + (Math.random() - 0.5) * Math.PI / 6, -1);
             } else {
                 myMove();
             }
         }
+    }
+
+    public void myFire(double direction, double distanceToEnemy) {
+        // Calculate enemy coordinates
+        if (distanceToEnemy != -1) {
+            double ennemyX = myX + distanceToEnemy * Math.cos(direction);
+            double ennemyY = myY + distanceToEnemy * Math.sin(direction);
+            // Send broadcast message when firing
+            broadcast(FIGHTINHG_ENEMY_MESSAGE + ";" + ennemyX + ";" + ennemyY + ";" + myID);
+        }
+
+        // Check if about to fire toward an ally
+        for (IRadarResult obj : detectRadar()) {
+            if (obj.getObjectType() == IRadarResult.Types.TeamMainBot ||
+                    obj.getObjectType() == IRadarResult.Types.TeamSecondaryBot) {
+                double allyDirection = obj.getObjectDirection();
+                double angleDifference = angleDiff(direction, allyDirection);
+                if (Math.abs(angleDifference) < ANGLEPRECISION) {
+                    sendLogMessage("Ally in firing line. Aborting fire.");
+                    return; // Abort firing
+                }
+            }
+        }
+
+        fire(direction);
+    }
+
+    // Trouve l'index du coin le plus proche
+    // 0: Top-left, 1: Top-right, 2: Bottom-left, 3: Bottom-right
+    private int closestCornerIndex(double x, double y) {
+        double[][] corners = {
+                {0.0, 0.0},
+                {3000, 0.0},
+                {0.0, 2000},
+                {3000, 2000}
+        };
+        int closestIndex = -1;
+        double minDistance = Double.MAX_VALUE;
+        for (int i = 0; i < corners.length; i++) {
+            double dx = x - corners[i][0];
+            double dy = y - corners[i][1];
+            double distance = Math.hypot(dx, dy);
+            if (distance < minDistance) {
+                minDistance = distance;
+                closestIndex = i;
+            }
+        }
+        return closestIndex;
     }
 
     // Déplacement en ligne droite vers (targetX, targetY)
@@ -708,7 +828,9 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         if (nearestEnemy != null) {
             // Suppoe there's no ally in front of us
             double direction = nearestEnemy.getObjectDirection();
-            fire(direction);
+            double distance = nearestEnemy.getObjectDistance();
+            myFire(direction, distance);
+            System.out.println("sent fire to direction " + direction + " at distance " + distance);
             return true;
         }
         return false;
@@ -719,7 +841,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         // Try to attack nearest enemy
         if (!attackNearestEnemy()) {
             // Spray randomly
-            fire(getHeading() + (Math.random() - 0.5) * Math.PI / 4);
+            myFire(getHeading() + (Math.random() - 0.5) * Math.PI / 4, -1);
         }
     }
 
