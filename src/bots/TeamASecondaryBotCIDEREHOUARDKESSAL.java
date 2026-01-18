@@ -430,6 +430,13 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
             }
         }
 
+        if (doTaskQueueContains(Task.MOVE_A_BIT)){
+            sendLogMessage("Another MOVE_A_BIT in queue, not moving to avoid conflicts.");
+            updateOdometryAfterMove();
+            move();
+            return;
+        }
+
         if (isAllyTooClose()) {
             sendLogMessage("Ally too close! Turn away and move.");
             return;
@@ -444,7 +451,14 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
         move();
     }
 
-    private static final double ALLY_TOO_CLOSE_DISTANCE = 200; // ajuste (15-30)
+    private boolean doTaskQueueContains(Task task){
+        for (QueuedTask qt: taskQueue){
+            if (qt.task==task) return true;
+        }
+        return false;
+    }
+
+    private static final double ALLY_TOO_CLOSE_DISTANCE = 100; // ajuste (15-30)
 
     private boolean isAllyTooClose() {
         for (IRadarResult obj : detectRadar()) {

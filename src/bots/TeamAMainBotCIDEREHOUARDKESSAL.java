@@ -25,6 +25,20 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
     private int alliedReadyToAttack = 0;
 
+    private static class QueuedTask {
+        final Task task;
+        final TaskAttribute attr; // null si pas besoin
+
+        QueuedTask(Task task) {
+            this.task = task;
+            this.attr = null;
+        }
+        QueuedTask(Task task,TaskAttribute attr) {
+            this.task = task;
+            this.attr = attr;
+        }
+    }
+
     private static class TaskAttribute {
         double targetHeading;
         double targetX;
@@ -148,8 +162,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
     private int shootAndAdvanceCounter = 0;
 
-    private LinkedList<Task> currentTasks;
-    private LinkedList<TaskAttribute> currentTaskAttributes;
+    private LinkedList<QueuedTask> currentTasks;
 
     @Override
     public void activate() {
@@ -193,7 +206,6 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         }
 
         currentTasks = new LinkedList<>();
-        currentTaskAttributes = new LinkedList<>();
     }
 
     // ===================== ODOMETRY CORRECTION =====================
@@ -310,12 +322,12 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         if (isLost) {
             System.out.println("[LOST " + myID + "] Position recovered! No longer lost.");
             isLost = false;
-            if (!currentTasks.isEmpty() && currentTasks.getFirst() == Task.LOST_WANDERING) {
+            if (!currentTasks.isEmpty() && currentTasks.getFirst().task == Task.LOST_WANDERING) {
                 currentTasks.removeFirst();
             }
             // Ajouter une tâche par défaut si la liste est vide
             if (currentTasks.isEmpty()) {
-                currentTasks.addFirst(Task.SHOOT_AND_ADVANCE);
+                currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
                 System.out.println("[LOST " + myID + "] Resuming with SHOOT_AND_ADVANCE task.");
             }
         }
@@ -326,8 +338,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             System.out.println("[LOST " + myID + "] Robot is LOST! Steps without correction: " + stepsSinceLastCorrection);
             isLost = true;
             currentTasks.clear();
-            currentTaskAttributes.clear();
-            currentTasks.addFirst(Task.LOST_WANDERING);
+            currentTasks.addFirst(new QueuedTask(Task.LOST_WANDERING));
             wanderDirection = Math.random() * 2 * Math.PI;
             wanderSteps = 0;
         }
@@ -409,7 +420,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     // Useful to chain tasks
     public boolean callNextTask() {
         if (!currentTasks.isEmpty()) {
-            switch (currentTasks.get(0)) { // replaced getFirst() -> get(0)
+            switch (currentTasks.get(0).task) { // replaced getFirst() -> get(0)
                 // TODO : Find a way to merge these similar tasks
                 case LOST_WANDERING:
                     lostWanderingBehavior();
@@ -458,9 +469,6 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 case TURN_RIGHT:
                     turnRight();
                     return true;
-                case CLOSE_DISTANCE:
-                    closeDistance();
-                    return true;
             }
         }
         return false;
@@ -482,7 +490,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         }
 
         if (!currentTasks.isEmpty()) {
-            System.out.println( myID + " executing task: " + currentTasks.getFirst());
+            System.out.println( myID + " executing task: " + currentTasks.getFirst().task);
             callNextTask();
             return;
         }
@@ -493,16 +501,9 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
     // LONGEMENT DES MURS
     private boolean turnLeft() {
-        if (currentTaskAttributes.isEmpty()) {
-            // targetHeading = getHeading() - Math.PI / 2;
-            this.currentTaskAttributes.addFirst(new TaskAttribute(getHeading() - 0.5 * Math.PI));
-            sendLogMessage("Turning left.");
-        }
         // Check if the turn is complete
-        if (isHeadingReached(currentTaskAttributes.getFirst().targetHeading)) {
-            currentTasks.remove(0); // removed removeFirst()
-            currentTaskAttributes.removeFirst();
-            sendLogMessage("Turn complete.");
+        if (isHeadingReached(currentTasks.getFirst().attr.targetHeading)) {
+            currentTasks.removeFirst();
             callNextTask();
             return false;
         } else {
@@ -512,16 +513,9 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     }
 
     private boolean turnRight() {
-        if (currentTaskAttributes.isEmpty()) {
-            // targetHeading = getHeading() - Math.PI / 2;
-            this.currentTaskAttributes.addFirst(new TaskAttribute(getHeading() + 0.5 * Math.PI));
-            sendLogMessage("Turning right.");
-        }
         // Check if the turn is complete
-        if (isHeadingReached(currentTaskAttributes.getFirst().targetHeading)) {
-            currentTasks.remove(0); // removed removeFirst()
-            currentTaskAttributes.removeFirst();
-            sendLogMessage("Turn complete.");
+        if (isHeadingReached(currentTasks.getFirst().attr.targetHeading)) {
+            currentTasks.removeFirst();
             callNextTask();
             return false;
         } else {
@@ -533,6 +527,8 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     private boolean isHeadingReached(double target) {
         return Math.abs(Math.sin(getHeading() - target)) < HEADING_PRECISION;
     }
+
+    private int shootOrAdvance = 0;
 
     private void shootAndHelp() {
         System.out.println("[DEBUG " + myID + "] shootAndHelp() called");
@@ -554,23 +550,13 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         }
         // No enemy or bullet detected, regroup
         System.out.println("[DEBUG " + myID + "] No enemy detected, calling headTowardCoord()");
-        headTowardCoord();
-    }
-
-    private boolean closeDistance() {
-        if (currentTaskAttributes.isEmpty()) {
-            this.currentTaskAttributes.add(new TaskAttribute());
-        }
-        // Check if the move is complete
-        if (currentTaskAttributes.getFirst().isTargetStepsReached()) {
-            currentTasks.removeFirst();
-            currentTaskAttributes.removeFirst();
-            callNextTask();
-            return false;
+        // Either shoot or advance
+        if (shootOrAdvance % 2 == 0) {
+            shootOrAdvance += 1;
+            myFire(getHeading(), -1);
         } else {
-            myMove();
-            currentTaskAttributes.getFirst().incrementStep();
-            return true;
+            shootOrAdvance -= 1;
+            headTowardCoord();
         }
     }
 
@@ -718,7 +704,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 rendezvousAngle = Double.parseDouble(parts[3]);
                 isOccupied = true;
                 currentTasks.clear();
-                currentTasks.add(0, Task.GET_INTO_FORMATION);
+                currentTasks.addFirst(new QueuedTask(Task.GET_INTO_FORMATION));
                 sendLogMessage("Received rendez-vous point at (" + rendezvousX + ", " + rendezvousY + ").");
                 return true;
             } catch (NumberFormatException e) {
@@ -730,7 +716,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             if (alliedReadyToAttack > 3) {
                 // Heading toward enemy while shooting either randomly or targeting nearest enemy
                 currentTasks.clear();
-                currentTasks.addFirst(Task.SHOOT_AND_ADVANCE);
+                currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
                 sendLogMessage("Advancing.");
                 alliedReadyToAttack = 0;
             }
@@ -752,22 +738,12 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 System.out.println("[DEBUG " + myID + "] currentTasks.isEmpty() = " + currentTasks.isEmpty());
                 if (nearestEnemy == null) {
                     sendLogMessage("Ally reported enemy at (" + enemyX + ", " + enemyY + "). Heading there.");
-                    System.out.println("[DEBUG " + myID + "] No enemy detected, checking current task...");
-                    if (!currentTasks.isEmpty()) {
-                        System.out.println("[DEBUG " + myID + "] currentTasks.getFirst() = " + currentTasks.getFirst());
-                        if (currentTasks.getFirst() == Task.SHOOT_AND_HELP) {
-                            System.out.println("[DEBUG " + myID + "] Already in SHOOT_AND_HELP, returning false");
-                            return false;
-                        }
-                    }
                     System.out.println("[DEBUG " + myID + "] Setting targetX=" + enemyX + ", targetY=" + enemyY);
                     targetX = enemyX;
                     targetY = enemyY;
                     System.out.println("[DEBUG " + myID + "] Clearing tasks and adding SHOOT_AND_HELP");
                     currentTasks.clear();
-                    currentTaskAttributes.clear();
-                    currentTasks.addFirst(Task.SHOOT_AND_HELP);
-                    currentTaskAttributes.addFirst(new TaskAttribute(reportingAllyID));
+                    currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_HELP, new TaskAttribute(reportingAllyID)));
                     System.out.println("[DEBUG " + myID + "] SHOOT_AND_HELP task added, calling callNextTask()");
                     callNextTask();
                     return true;
@@ -784,16 +760,15 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             System.out.println("[DEBUG " + myID + "] Received NOT_FIGHTING_ENEMY_MESSAGE");
             String reportingAllyID = parts[1];
             // If currently in SHOOT_AND_HELP task targeting this ally, stop it
-            if (!currentTasks.isEmpty() && currentTasks.getFirst() == Task.SHOOT_AND_HELP) {
+            if (!currentTasks.isEmpty() && currentTasks.getFirst().task == Task.SHOOT_AND_HELP) {
                 System.out.println("[DEBUG " + myID + "] Currently in SHOOT_AND_HELP");
-                if (!currentTaskAttributes.isEmpty()) {
-                    TaskAttribute currentTaskAttr = currentTaskAttributes.getFirst();
+                if (!currentTasks.isEmpty()) {
+                    TaskAttribute currentTaskAttr = currentTasks.getFirst().attr;
                     System.out.println("[DEBUG " + myID + "] currentTaskAttr.allyId = " + currentTaskAttr.allyId);
                     if (currentTaskAttr.allyId != null && currentTaskAttr.allyId.equals(reportingAllyID)) {
                         System.out.println("[DEBUG " + myID + "] Stopping SHOOT_AND_HELP, switching to SHOOT_AND_ADVANCE");
-                        currentTaskAttributes.clear();
                         currentTasks.clear();
-                        currentTasks.addFirst(Task.SHOOT_AND_ADVANCE);
+                        currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
                     }
                 }
             }
@@ -839,8 +814,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 }
 
                 System.out.println("Heading (normalized): " + heading + " -> Target: " + targetHeading);
-                currentTasks.addFirst(Task.TURN);
-                currentTaskAttributes.addFirst(new TaskAttribute(targetHeading));
+                currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetHeading)));
                 return;
             }
 
@@ -916,7 +890,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             sendLogMessage("Reached target coordinates (" + targetX + ", " + targetY + ").");
             System.out.println("[DEBUG " + myID + "] Target reached!");
             // Remove SHOOT_AND_HELP task and switch to SHOOT_AND_ADVANCE
-            if (currentTasks.getFirst() == Task.SHOOT_AND_HELP) {
+            if (currentTasks.getFirst().task == Task.SHOOT_AND_HELP) {
                 // Check if there's enemy nearby before switching
                 // If no enemy, consider lost
                 System.out.println("[DEBUG " + myID + "] Removing SHOOT_AND_HELP, switching to SHOOT_AND_ADVANCE");
@@ -925,16 +899,15 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                     System.out.println("[DEBUG " + myID + "] No enemy nearby after reaching target, considering lost");
                     isLost = true;
                     currentTasks.clear();
-                    currentTaskAttributes.clear();
-                    currentTasks.addFirst(Task.LOST_WANDERING);
+                    currentTasks.addFirst(new QueuedTask(Task.LOST_WANDERING));
                     wanderDirection = Math.random() * 2 * Math.PI;
                     wanderSteps = 0;
                     return;
                 }
-                if (!currentTaskAttributes.isEmpty()) {
-                    currentTaskAttributes.removeFirst();
+                if (!currentTasks.isEmpty()) {
+                    currentTasks.removeFirst();
                 }
-                currentTasks.addFirst(Task.SHOOT_AND_ADVANCE);
+                currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
                 callNextTask();
             }
             return;
@@ -984,7 +957,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 isOccupied = false;
                 if (!currentTasks.isEmpty())
                     currentTasks.removeFirst();
-                currentTasks.addFirst(Task.COVER_AREA);
+                currentTasks.addFirst(new QueuedTask(Task.COVER_AREA));
                 alliedReadyToAttack+=1;
                 callNextTask();
                 return false;
@@ -1000,26 +973,25 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
         // Check for WAITING_FOR_ALLY_STATUS task
         for (int i = 0; i < currentTasks.size(); i++) {
-            if (currentTasks.get(i) == Task.WAITING_FOR_ALLY_STATUS) {
-                if (currentTaskAttributes.get(i).isTargetWaitingStepsReached()) {
+            if (currentTasks.get(i).task == Task.WAITING_FOR_ALLY_STATUS) {
+                if (currentTasks.get(i).attr.isTargetWaitingStepsReached()) {
                     // Remove the waiting task
                     currentTasks.remove(i);
-                    currentTaskAttributes.remove(i);
                     break;
                 } else {
-                    currentTaskAttributes.get(i).incrementWaitingStep();
-                    sendLogMessage("Waiting for ally status... Step " + currentTaskAttributes.get(i).getCurrentStep());
+                    currentTasks.get(i).attr.incrementWaitingStep();
+                    sendLogMessage("Waiting for ally status... Step " + currentTasks.get(i).attr.getCurrentStep());
                     return; // Do not move while waiting
                 }
             }
         }
 
-        if (currentTasks.getFirst().equals(Task.GO_AROUND_OBJECT)) {
+        if (currentTasks.getFirst().task.equals(Task.GO_AROUND_OBJECT)) {
             goAroundObject();
             return;
         }
 
-        if (currentTasks.getFirst().equals(Task.MOVE_A_BIT)) {
+        if (currentTasks.getFirst().task.equals(Task.MOVE_A_BIT)) {
                 updateOdometryAfterMove();
                 move();
                 return;
@@ -1028,7 +1000,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         if (isObstacleTooClose(1.04)) {
             // Check if we are alreadyTrying to go around an object
             if (!doCurrentTaskContain(Task.GO_AROUND_OBJECT)) {
-                currentTasks.addFirst(Task.GO_AROUND_OBJECT);
+                currentTasks.addFirst(new QueuedTask(Task.GO_AROUND_OBJECT));
                 sendLogMessage("Object too close: initiating go around maneuver.");
             } else {
                 System.out.println("couou");
@@ -1067,38 +1039,35 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     }
 
     private void goAroundObject() {
+        // remove GO_AROUND_OBJECT task
+        currentTasks.removeFirst();
+
         // Determine nearest object position relative to us
         IRadarResult closestObject = getRadarClosestObject();
         if (closestObject == null) {
-            // No object detected, remove the task
-            int index = currentTasks.indexOf(Task.GO_AROUND_OBJECT);
-            if (index != -1) {
-                currentTasks.remove(index);
-            }
             sendLogMessage("No object detected: stopping go around maneuver.");
             return;
         }
 
-        if (!currentTaskAttributes.contains(Task.GO_AROUND_OBJECT)){
-            double objectDirection = closestObject.getObjectDirection();
-            // Determine turn direction to go around (always turn right for simplicity)
-            double turnDirection = objectDirection + Math.PI / 2;
-            // Add turnaround Task
-            // remove existing GO_AROUND_OBJECT task to avoid duplication
-            int index = currentTasks.indexOf(Task.GO_AROUND_OBJECT);
-            if (index != -1) {
-                currentTasks.remove(index);
-            }
-            currentTasks.addFirst(Task.MOVE_A_BIT);
-            currentTaskAttributes.addFirst(new TaskAttribute(20)); // Move a bit forward
-            currentTasks.addFirst(Task.TURN);
-            currentTaskAttributes.addFirst(new TaskAttribute(turnDirection));
-        }
+        // objectDirection is RELATIVE to our current heading
+        double objectDirection = normalizeAngle(closestObject.getObjectDirection());
+
+        // Turn AWAY from the obstacle (if obstacle is on the right, turn left; if on the left, turn right)
+        double sideStep = (objectDirection >= 0) ? -Math.PI / 2 : Math.PI / 2;
+
+        // Small extra bias so we don't end up tangentially glued to the wreck
+        double bias = (objectDirection >= 0) ? -Math.PI / 12 : Math.PI / 12;
+
+        double targetHeading = normalizeAngle(getHeading() + sideStep + bias);
+
+        // Sequence: turn away, then move forward a bit to clear the obstacle
+        currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(40)));
+        currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetHeading)));
     }
 
-    private boolean doCurrentTaskContain(Task task) {
-        for (Task t : currentTasks) {
-            if (t == task) {
+    private boolean doCurrentTaskContain(Task obj) {
+        for (QueuedTask task : currentTasks) {
+            if (task.task == obj) {
                 return true;
             }
         }
@@ -1119,7 +1088,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     }
 
     private void turn() {
-        TaskAttribute currentTask = currentTaskAttributes.getFirst();
+        TaskAttribute currentTask = currentTasks.getFirst().attr;
         double targetHeading = currentTask.targetHeading;
         Parameters.Direction turnDirection = getOptimalTurnDirectionWithHysteresis(targetHeading);
         if (turnDirection != null) {
@@ -1127,21 +1096,31 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         } else {
             // Turn complete
             currentTasks.removeFirst();
-            currentTaskAttributes.removeFirst();
             sendLogMessage("Turn complete.");
             callNextTask();
         }
     }
 
     private void moveAbit() {
-        TaskAttribute currentTask = currentTaskAttributes.getFirst();
+        TaskAttribute currentTask = currentTasks.getFirst().attr;
         if (currentTask.isTargetWaitingStepsReached()) {
             // Move complete
             currentTasks.removeFirst();
-            currentTaskAttributes.removeFirst();
             sendLogMessage("Move a bit complete.");
             callNextTask();
         } else {
+            // If we're still blocked, change heading a bit and retry instead of ramming the wreck forever
+            IFrontSensorResult front = detectFront();
+            if (front.getObjectType() == IFrontSensorResult.Types.Wreck || front.getObjectType() == IFrontSensorResult.Types.WALL) {
+                // Abort current MOVE_A_BIT and perform a small additional turn away
+                currentTasks.removeFirst();
+                double delta = (Math.random() < 0.5) ? (Math.PI / 6) : (-Math.PI / 6);
+                currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(30)));
+                currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(normalizeAngle(getHeading() + delta))));
+                sendLogMessage("Blocked during MOVE_A_BIT: adjusting heading.");
+                return;
+            }
+
             myMove();
             currentTask.incrementWaitingStep();
         }
