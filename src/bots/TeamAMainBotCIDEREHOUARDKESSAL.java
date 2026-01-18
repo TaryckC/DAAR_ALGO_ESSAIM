@@ -916,9 +916,21 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             sendLogMessage("Reached target coordinates (" + targetX + ", " + targetY + ").");
             System.out.println("[DEBUG " + myID + "] Target reached!");
             // Remove SHOOT_AND_HELP task and switch to SHOOT_AND_ADVANCE
-            if (!currentTasks.isEmpty() && currentTasks.getFirst() == Task.SHOOT_AND_HELP) {
+            if (currentTasks.getFirst() == Task.SHOOT_AND_HELP) {
+                // Check if there's enemy nearby before switching
+                // If no enemy, consider lost
                 System.out.println("[DEBUG " + myID + "] Removing SHOOT_AND_HELP, switching to SHOOT_AND_ADVANCE");
                 currentTasks.removeFirst();
+                if (null == getNearestEnemy(detectRadar(), 0)) {
+                    System.out.println("[DEBUG " + myID + "] No enemy nearby after reaching target, considering lost");
+                    isLost = true;
+                    currentTasks.clear();
+                    currentTaskAttributes.clear();
+                    currentTasks.addFirst(Task.LOST_WANDERING);
+                    wanderDirection = Math.random() * 2 * Math.PI;
+                    wanderSteps = 0;
+                    return;
+                }
                 if (!currentTaskAttributes.isEmpty()) {
                     currentTaskAttributes.removeFirst();
                 }
