@@ -49,9 +49,11 @@ public class Strategy extends Brain {
     private boolean hasTarget = false;
 
     private int targetLockTimer = 0; // Le compte à rebours
-    private final static int LOCK_DURATION = 50; // On reste fixé 50 steps (environ 2-3 sec)
-    private final static double SAME_TARGET_THRESHOLD = 200.0;
+    private final static int LOCK_DURATION = 150; // On reste fixé 50 steps (environ 2-3 sec)
+    private final static double SAME_TARGET_THRESHOLD = 400.0;
 
+    private int lockTimer = 0;
+    private boolean lockCible = false;
     @Override
     public void bind(Bot bot) {
         this.bot = bot;
@@ -155,12 +157,21 @@ public class Strategy extends Brain {
         }
         // Si on est À PORTÉE (< 1000)
         else {
-            // ON ATTAQUE !
+            if(state == State.MOVE_TO_TARGET && !lockCible){
+                state = State.ATTACK;
+                lockTimer = 0;
+                lockCible = true;
+            }
+            else{
+                lockTimer++;
+                if(lockTimer > LOCK_DURATION){
+                    state = State.MOVE;
+                    lockCible = false;
+                }
+            }
 
-            // Important : On force les variables pour que le step() prenne le relais au prochain tour
-            this.targetDir = angleVersCible;
 
-            // Optionnel : On peut tirer immédiatement pour ne pas perdre 1 tour
+
             performCombat(angleVersCible);
         }
     }
@@ -449,7 +460,6 @@ public class Strategy extends Brain {
             // On tourne à GAUCHE
             this.targetHeading = normalizeAngle(getHeading() - (Math.PI / 2));
             //state = State.AVOID_WALL;
-            // On retourne true pour dire "J'ai agi, arrête le tour"
             return true;
         }
 
