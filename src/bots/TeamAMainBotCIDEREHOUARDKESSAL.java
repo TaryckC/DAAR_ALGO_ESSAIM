@@ -14,42 +14,25 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     private static final String MB2 = "Main-bot-2";
     private static final String MB3 = "Main-bot-3";
 
-    private  static final String MSG_ENEMY_FOUND = "ENEMY_MARKED";
     private static final String READY_TO_ATTACK_MESSAGE = "READY_TO_ATTACK";
-    private static final String FIGHTINHG_ENEMY_MESSAGE = "FIGHTING_ENEMY";
+    private static final String FIGHTING_ENEMY_MESSAGE = "FIGHTING_ENEMY";
     private static final String NOT_FIGHTING_ENEMY_MESSAGE = "NO_ENEMY_DETECTED";
 
-    // Messages pour la localisation
-    private static final String REQUEST_POSITION = "REQUEST_POS";
-    private static final String POSITION_RESPONSE = "POS_RESP";
-
     private int alliedReadyToAttack = 0;
-    boolean gameHasStarted = false;
 
-    private static class QueuedTask {
-        final Task task;
-        final TaskAttribute attr; // null si pas besoin
-
-        QueuedTask(Task task) {
-            this.task = task;
-            this.attr = null;
-        }
-        QueuedTask(Task task,TaskAttribute attr) {
-            this.task = task;
-            this.attr = attr;
-        }
+    /**
+     * @param attr null si pas besoin
+     */
+    private record QueuedTask(Task task, TaskAttribute attr) {
+            QueuedTask(Task task) {
+                this(task, null);
+            }
     }
 
     private static class TaskAttribute {
         double targetHeading;
-        double targetX;
-        double targetY;
-        final int TARGET_STEPS = 100;
         private int currentStep;
         private int targetWaitingSteps;
-
-        // nouvelle variable pour stocker la réponse de l'allié (true => il bouge, false => il est à l'arrêt, null => pas de réponse)
-        private Boolean allyIsMovingResponse = null;
 
         TaskAttribute(double targetHeading) {
             this.targetHeading = targetHeading;
@@ -68,45 +51,12 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             return currentStep >= targetWaitingSteps;
         }
 
-        public int incrementWaitingStep() {
+        public void incrementWaitingStep() {
             this.currentStep++;
-            return currentStep;
-        }
-
-        TaskAttribute(double targetX, double targetY) {
-            this.targetX = targetX;
-            this.targetY = targetY;
-        }
-
-        TaskAttribute() {
-            currentStep = 0;
-        }
-
-        // return pre-increment value
-        public int incrementStep() {
-            return currentStep++;
         }
 
         public int getCurrentStep() {
             return currentStep;
-        }
-
-        public boolean isTargetStepsReached() {
-            return currentStep >= TARGET_STEPS;
-        }
-
-        // --- nouvelles méthodes pour la communication ---
-        public void setAllyResponse(Boolean moving) {
-            this.allyIsMovingResponse = moving;
-        }
-
-        public Boolean getAllyResponse() {
-            return this.allyIsMovingResponse;
-        }
-
-        // marque l'attente comme terminée (permettre suppression immédiate de la tâche WAITING)
-        public void markWaitingComplete() {
-            this.currentStep = this.targetWaitingSteps;
         }
     }
 
@@ -124,8 +74,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         GET_INTO_FORMATION, WAITING_FOR_ALLY_STATUS, GO_AROUND_OBJECT, TURN,
         MOVE_A_BIT, COVER_AREA, SHOOT_AND_ADVANCE, SHOOT_AND_HELP,
         // Lost recovery
-        LOST_WANDERING
-    }
+        }
 
     private static final double TURN_HYSTERESIS = 0.02;
     private static final double SHOOTING_RANGE_OFFSET = 10.0;
@@ -143,23 +92,8 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     private double myX;
     private double myY;
 
-    // Lost detection
-    private int stepsSinceLastCorrection = 0;
-    private static final int LOST_THRESHOLD = 5000;
-    private boolean isLost = false;
-    private double wanderDirection = 0;
-    private int wanderSteps = 0;
-
-    // --- nouveaux champs pour RDV / formation ---
-    private boolean isOccupied = false;
-    private double rendezvousX;
-    private double rendezvousY;
-    private double rendezvousAngle;
     private double targetX;
     private double targetY;
-    private double RDV_OFFSET_X = -70.0;
-    private double RDV_OFFSET_Y = 100.0;
-    private String RDV_MESSAGE = "RENDEZVOUS";
 
     private int shootAndAdvanceCounter = 0;
 
@@ -167,9 +101,6 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
     @Override
     public void activate() {
-        // If bot detects allied main bot, downward and upward its position -> he's determined to be MB2
-        // If there's only an allied mainBot upward, then it's MB1
-        // Else it's MB3
         boolean isAlliedBotUpwardDetected = false;
         boolean isAlliedBotDownwardDetected = false;
         for (IRadarResult obj : detectRadar()) {
@@ -209,198 +140,17 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         currentTasks = new LinkedList<>();
     }
 
-    // ===================== ODOMETRY CORRECTION =====================
-
-    /**
-     * Corrige l'odométrie en utilisant la détection des murs.
-     * Quand le capteur frontal détecte un mur, on recale la position.
-     */
-    private void correctOdometryWithWalls() {
-        IFrontSensorResult frontSensor = detectFront();
-        if (frontSensor.getObjectType() != IFrontSensorResult.Types.WALL) {
-            return;
-        }
-
-        double heading = getHeading();
-        // Normaliser heading dans [0, 2π]
-        while (heading < 0) heading += 2 * Math.PI;
-        while (heading >= 2 * Math.PI) heading -= 2 * Math.PI;
-
-        // Distance du centre du bot au mur = FRONT_SENSOR_RANGE (portée de détection)
-        // En réalité c'est la distance au moment où on détecte le mur
-        double distanceToWall = FRONT_SENSOR_RANGE;
-
-        // Tolérance angulaire pour considérer qu'on fait face à un mur
-        double tolerance = Math.PI / 6; // 30 degrés
-        boolean corrected = false;
-
-        // Mur EAST (x = ARENA_WIDTH)
-        if (Math.abs(heading - 0) < tolerance || Math.abs(heading - 2*Math.PI) < tolerance) {
-            double correctedX = ARENA_WIDTH - distanceToWall - BOT_RADIUS;
-            if (Math.abs(myX - correctedX) > 50) { // Correction significative
-                System.out.println("[ODOMETRY " + myID + "] Wall EAST correction: myX " + myX + " -> " + correctedX);
-                myX = correctedX;
-                corrected = true;
-            }
-        }
-        // Mur SOUTH (y = ARENA_HEIGHT)
-        else if (Math.abs(heading - Math.PI/2) < tolerance) {
-            double correctedY = ARENA_HEIGHT - distanceToWall - BOT_RADIUS;
-            if (Math.abs(myY - correctedY) > 50) {
-                System.out.println("[ODOMETRY " + myID + "] Wall SOUTH correction: myY " + myY + " -> " + correctedY);
-                myY = correctedY;
-                corrected = true;
-            }
-        }
-        // Mur WEST (x = 0)
-        else if (Math.abs(heading - Math.PI) < tolerance) {
-            double correctedX = distanceToWall + BOT_RADIUS;
-            if (Math.abs(myX - correctedX) > 50) {
-                System.out.println("[ODOMETRY " + myID + "] Wall WEST correction: myX " + myX + " -> " + correctedX);
-                myX = correctedX;
-                corrected = true;
-            }
-        }
-        // Mur NORTH (y = 0)
-        else if (Math.abs(heading - 3*Math.PI/2) < tolerance || Math.abs(heading + Math.PI/2) < tolerance) {
-            double correctedY = distanceToWall + BOT_RADIUS;
-            if (Math.abs(myY - correctedY) > 50) {
-                System.out.println("[ODOMETRY " + myID + "] Wall NORTH correction: myY " + myY + " -> " + correctedY);
-                myY = correctedY;
-                corrected = true;
-            }
-        }
-
-        if (corrected) {
-            resetLostState();
-        }
-    }
-
-    /**
-     * Corrige l'odométrie en utilisant les limites du terrain.
-     * Empêche les positions impossibles (en dehors du terrain).
-     */
-    private void clampPositionToArena() {
-        double margin = BOT_RADIUS;
-        double oldX = myX, oldY = myY;
-
-        if (myX < margin) myX = margin;
-        if (myX > ARENA_WIDTH - margin) myX = ARENA_WIDTH - margin;
-        if (myY < margin) myY = margin;
-        if (myY > ARENA_HEIGHT - margin) myY = ARENA_HEIGHT - margin;
-
-        if (oldX != myX || oldY != myY) {
-            System.out.println("[ODOMETRY " + myID + "] Clamped position from (" + oldX + ", " + oldY + ") to (" + myX + ", " + myY + ")");
-        }
-    }
-
-    /**
-     * Met à jour l'odométrie après un mouvement.
-     */
     private void updateOdometryAfterMove() {
-        myX += Parameters.teamAMainBotSpeed * Math.cos(getHeading());
-        myY += Parameters.teamAMainBotSpeed * Math.sin(getHeading());
-        clampPositionToArena();
-        stepsSinceLastCorrection++;
-    }
-
-    /**
-     * Met à jour l'odométrie après un recul.
-     */
-    private void updateOdometryAfterMoveBack() {
-        myX -= Parameters.teamAMainBotSpeed * Math.cos(getHeading());
-        myY -= Parameters.teamAMainBotSpeed * Math.sin(getHeading());
-        clampPositionToArena();
-        stepsSinceLastCorrection++;
+        myX = this.myX + Parameters.teamAMainBotSpeed * Math.cos(this.getHeading());
+        myY = this.myY + Parameters.teamAMainBotSpeed * Math.sin(this.getHeading());
     }
 
     // ===================== END ODOMETRY CORRECTION =====================
-
-    // ===================== LOST DETECTION & RECOVERY =====================
-
-    private void resetLostState() {
-        stepsSinceLastCorrection = 0;
-        if (isLost) {
-            System.out.println("[LOST " + myID + "] Position recovered! No longer lost.");
-            isLost = false;
-            if (!currentTasks.isEmpty() && currentTasks.getFirst().task == Task.LOST_WANDERING) {
-                currentTasks.removeFirst();
-            }
-            // Ajouter une tâche par défaut si la liste est vide
-            if (currentTasks.isEmpty()) {
-                currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
-                System.out.println("[LOST " + myID + "] Resuming with SHOOT_AND_ADVANCE task.");
-            }
-        }
-    }
-
-    private void checkIfLost() {
-        if (!isLost && stepsSinceLastCorrection > LOST_THRESHOLD) {
-            System.out.println("[LOST " + myID + "] Robot is LOST! Steps without correction: " + stepsSinceLastCorrection);
-            isLost = true;
-            currentTasks.clear();
-            currentTasks.addFirst(new QueuedTask(Task.LOST_WANDERING));
-            wanderDirection = Math.random() * 2 * Math.PI;
-            wanderSteps = 0;
-        }
-    }
-
-    private void lostWanderingBehavior() {
-        sendLogMessage("LOST! Wandering to find ally...");
-
-        ArrayList<IRadarResult> radarResults = detectRadar();
-        for (IRadarResult result : radarResults) {
-            if (result.getObjectType() == IRadarResult.Types.TeamMainBot ||
-                result.getObjectType() == IRadarResult.Types.TeamSecondaryBot) {
-                System.out.println("[LOST " + myID + "] Ally detected! Requesting position...");
-                broadcast(REQUEST_POSITION + ";" + myID);
-                return;
-            }
-        }
-
-        IFrontSensorResult front = detectFront();
-        wanderSteps++;
-
-        if (front.getObjectType() == IFrontSensorResult.Types.WALL ||
-            front.getObjectType() == IFrontSensorResult.Types.Wreck ||
-            wanderSteps > 200) {
-            wanderDirection = Math.random() * 2 * Math.PI;
-            wanderSteps = 0;
-            System.out.println("[LOST " + myID + "] Changing wander direction to: " + wanderDirection);
-        }
-
-        double angleDelta = normalizeAngle(wanderDirection - getHeading());
-        if (Math.abs(angleDelta) > 0.1) {
-            if (angleDelta > 0) {
-                stepTurn(Parameters.Direction.RIGHT);
-            } else {
-                stepTurn(Parameters.Direction.LEFT);
-            }
-        } else {
-            if (front.getObjectType() == IFrontSensorResult.Types.NOTHING) {
-                updateOdometryAfterMove();
-                move();
-            }
-        }
-    }
 
     private double normalizeAngle(double angle) {
         while (angle > Math.PI) angle -= 2 * Math.PI;
         while (angle < -Math.PI) angle += 2 * Math.PI;
         return angle;
-    }
-
-    private void recalibrateFromAlly(double allyX, double allyY, double allyDirection, double allyDistance) {
-        double newX = allyX - allyDistance * Math.cos(allyDirection);
-        double newY = allyY - allyDistance * Math.sin(allyDirection);
-
-        System.out.println("[LOST " + myID + "] Recalibrating from ally position (" + allyX + ", " + allyY + ")");
-        System.out.println("[LOST " + myID + "] Old position: (" + myX + ", " + myY + ") -> New position: (" + newX + ", " + newY + ")");
-
-        myX = newX;
-        myY = newY;
-        clampPositionToArena();
-        resetLostState();
     }
 
     // ===================== END LOST DETECTION & RECOVERY =====================
@@ -419,69 +169,39 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
     // return true if there is a task being executed and executes it
     // Useful to chain tasks
-    public boolean callNextTask() {
+    public void callNextTask() {
         if (!currentTasks.isEmpty()) {
-            switch (currentTasks.get(0).task) { // replaced getFirst() -> get(0)
-                // TODO : Find a way to merge these similar tasks
-                case LOST_WANDERING:
-                    lostWanderingBehavior();
-                    return true;
+            switch (currentTasks.getFirst().task) { // replaced getFirst() -> get(0)
                 case SHOOT_AND_HELP :
                     shootAndHelp();
-                    return true;
+                    break;
                 case SHOOT_AND_ADVANCE:
                     shootAndAdvance();
-                    return true;
-                case COVER_AREA:
-                    coverArea();
-                    return true;
+                    break;
                 case GO_AROUND_OBJECT:
                     goAroundObject();
-                    return true;
+                    break;
                 case MOVE_A_BIT :
                     moveAbit();
-                    return true;
+                    break;
                 case TURN :
                     turn();
-                    return true;
-                case HEAD_TOWARD_ANY_ENEMY_AT_SHOOTING_RANGE:
-                    headTowardNearestEnemy(true, 0);
-                    return true;
-                case HEAD_TOWARD_MAIN_ENEMY_AT_SHOOTING_RANGE:
-                    headTowardNearestEnemy(true, 1);
-                    return true;
-                case HEAD_TOWARD_SECONDARY_ENEMY_AT_SHOOTING_RANGE:
-                    headTowardNearestEnemy(true, 2);
-                    return true;
-                case HEAD_TOWARD_ANY_ENEMY_AT_CLOSE_RANGE:
-                    headTowardNearestEnemy(false, 0);
-                    return true;
-                case HEAD_TOWARD_MAIN_ENEMY_AT_CLOSE_RANGE:
-                    headTowardNearestEnemy(false, 1);
-                    return true;
-                case HEAD_TOWARD_SECONDARY_ENEMY_AT_CLOSE_RANGE:
-                    headTowardNearestEnemy(false, 2);
-                    return true;
-                case GET_INTO_FORMATION:
-                    return getIntoFormation();
+                    break;
                 case TURN_LEFT:
                     turnLeft();
-                    return true;
+                    break;
                 case TURN_RIGHT:
                     turnRight();
-                    return true;
             }
         }
-        return false;
     }
 
     public void step() {
+        System.out.println("Bot ID: " + myID + " | Position: (" + myX + ", " + myY + ") | Health: " + getHealth());
         // Correction d'odométrie à chaque step
-        correctOdometryWithWalls();
-        clampPositionToArena();
-
-        // Vérifier si le robot est perdu
-        checkIfLost();
+        if (getHealth() <= 0) {
+            return;
+        }
 
         ArrayList<String> messages = this.fetchAllMessages();
         for (String message : messages) {
@@ -491,40 +211,31 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         }
 
         if (!currentTasks.isEmpty()) {
-            System.out.println( myID + " executing task: " + currentTasks.getFirst().task);
             callNextTask();
             return;
         }
-        else {
-            // Shoot and advance
-            // Wait for secondary bots signal
-            if (gameHasStarted)
-                currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
-        }
+
+        sendLogMessage("No task. Holding position.");
     }
 
     // LONGEMENT DES MURS
-    private boolean turnLeft() {
+    private void turnLeft() {
         // Check if the turn is complete
         if (isHeadingReached(currentTasks.getFirst().attr.targetHeading)) {
             currentTasks.removeFirst();
             callNextTask();
-            return false;
         } else {
             stepTurn(Parameters.Direction.LEFT);
-            return true;
         }
     }
 
-    private boolean turnRight() {
+    private void turnRight() {
         // Check if the turn is complete
         if (isHeadingReached(currentTasks.getFirst().attr.targetHeading)) {
             currentTasks.removeFirst();
             callNextTask();
-            return false;
         } else {
             stepTurn(Parameters.Direction.RIGHT);
-            return true;
         }
     }
 
@@ -535,25 +246,19 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     private int shootOrAdvance = 0;
 
     private void shootAndHelp() {
-        System.out.println("[DEBUG " + myID + "] shootAndHelp() called");
-        System.out.println("[DEBUG " + myID + "] targetX=" + targetX + ", targetY=" + targetY);
-        System.out.println("[DEBUG " + myID + "] myX=" + myX + ", myY=" + myY);
         // Try to regroup with allied that sent the message
         // While shooting at enemies
         ArrayList<IRadarResult> objects = this.detectRadar();
-        System.out.println("[DEBUG " + myID + "] Radar detected " + objects.size() + " objects");
         for (IRadarResult object : objects) {
             if (object.getObjectType() == IRadarResult.Types.OpponentMainBot ||
                     object.getObjectType() == IRadarResult.Types.OpponentSecondaryBot) {
                 double direction = object.getObjectDirection();
                 double distance = object.getObjectDistance();
-                System.out.println("[DEBUG " + myID + "] Enemy detected at direction=" + direction + ", distance=" + distance + ". Firing!");
                 myFire(direction, distance);
                 return;
             }
         }
         // No enemy or bullet detected, regroup
-        System.out.println("[DEBUG " + myID + "] No enemy detected, calling headTowardCoord()");
         // Either shoot or advance
         if (shootOrAdvance % 2 == 0) {
             shootOrAdvance += 1;
@@ -583,15 +288,13 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     // If type is 1 : then look for main bot only
     // If type is 2 : then look for secondary bot only
     private boolean isEnemyOfType(IRadarResult enemy, int type) {
-        switch (type) {
-            case 0:
-                return enemy.getObjectType() == IRadarResult.Types.OpponentMainBot || enemy.getObjectType() == IRadarResult.Types.OpponentSecondaryBot;
-            case 1:
-                return enemy.getObjectType() == IRadarResult.Types.OpponentMainBot;
-            case 2:
-                return enemy.getObjectType() == IRadarResult.Types.OpponentSecondaryBot;
-        }
-        return false;
+        return switch (type) {
+            case 0 ->
+                    enemy.getObjectType() == IRadarResult.Types.OpponentMainBot || enemy.getObjectType() == IRadarResult.Types.OpponentSecondaryBot;
+            case 1 -> enemy.getObjectType() == IRadarResult.Types.OpponentMainBot;
+            case 2 -> enemy.getObjectType() == IRadarResult.Types.OpponentSecondaryBot;
+            default -> false;
+        };
     }
 
     // stopAtShootingRange : if true, considers current bot as a shooter and stop it from advancing too much into shooting range
@@ -615,107 +318,11 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         return nearestEnemy;
     }
 
-    // NOTE : Radar has a limited range.
-    // Currently follows the direct path toward enemy, without checking for obstacles
-    private boolean headTowardNearestEnemy(boolean stopAtShootingRange, int type) {
-        // No attributes needed for this task
-        ArrayList<IRadarResult> objects = this.detectRadar();
-        IRadarResult nearestEnemy = getNearestEnemy(objects, type);
-        if (nearestEnemy != null) {
-            this.sendLogMessage("Heading toward nearest enemy of type " + type + " at distance " + nearestEnemy.getObjectDistance());
-            double enemyDirection = nearestEnemy.getObjectDirection();
-            // Determine optimal turn direction
-            Parameters.Direction turnDirection = getOptimalTurnDirectionWithHysteresis(enemyDirection);
-            if (turnDirection != null) {
-                // Need to turn
-                stepTurn(turnDirection);
-                return true;
-            } else {
-                // Facing enemy
-                if (stopAtShootingRange) {
-                    double distanceToEnemy = nearestEnemy.getObjectDistance();
-                    double shootingRange = Parameters.bulletRange - SHOOTING_RANGE_OFFSET;
-                    if (distanceToEnemy > shootingRange) {
-                        myMove(); // Advance toward enemy
-                    } else {
-                        sendLogMessage("In shooting range of enemy. Holding position.");
-                    }
-                } else {
-                    // No need to stop, just go ahead
-                    myMove();
-                }
-                return true;
-            }
-        }
-
-        this.sendLogMessage("No enemy of type " + type + " detected.");
-
-        // No action taken
-        // Engage call next task
-        if (!currentTasks.isEmpty()) currentTasks.remove(0); // removed removeFirst()
-        callNextTask();
-        return false;
-    }
-
     // --- nouvelles méthodes pour gestion RDV / déplacement en ligne droite ---
 
     private boolean receiveMessage(String message) {
         String[] parts = message.split(";");
 
-        // ===== Messages de localisation pour robots perdus =====
-
-        if (parts[0].equals(REQUEST_POSITION) && parts.length == 2) {
-            String requesterId = parts[1];
-            if (!isLost) {
-                broadcast(POSITION_RESPONSE + ";" + requesterId + ";" + myX + ";" + myY + ";" + myID);
-                System.out.println("[LOST " + myID + "] Received position request from " + requesterId + ". Sent my position.");
-            }
-            return false;
-        }
-
-        if (parts[0].equals(POSITION_RESPONSE) && parts.length == 5) {
-            String targetId = parts[1];
-            if (!targetId.equals(myID)) {
-                return false;
-            }
-            try {
-                double allyX = Double.parseDouble(parts[2]);
-                double allyY = Double.parseDouble(parts[3]);
-                String allyId = parts[4];
-
-                System.out.println("[LOST " + myID + "] Received position from " + allyId + ": (" + allyX + ", " + allyY + ")");
-
-                ArrayList<IRadarResult> radarResults = detectRadar();
-                for (IRadarResult result : radarResults) {
-                    if (result.getObjectType() == IRadarResult.Types.TeamMainBot ||
-                        result.getObjectType() == IRadarResult.Types.TeamSecondaryBot) {
-                        recalibrateFromAlly(allyX, allyY, result.getObjectDirection(), result.getObjectDistance());
-                        return true;
-                    }
-                }
-                System.out.println("[LOST " + myID + "] Ally no longer on radar, ignoring position response.");
-            } catch (NumberFormatException e) {
-                System.out.println("[LOST " + myID + "] Invalid position response format.");
-            }
-            return false;
-        }
-
-        // ===== Autres messages =====
-
-        if (parts[0].equals(RDV_MESSAGE) && parts.length == 4) {
-            try {
-                rendezvousX = Double.parseDouble(parts[1]);
-                rendezvousY = Double.parseDouble(parts[2]);
-                rendezvousAngle = Double.parseDouble(parts[3]);
-                isOccupied = true;
-                currentTasks.clear();
-                currentTasks.addFirst(new QueuedTask(Task.GET_INTO_FORMATION));
-                sendLogMessage("Received rendez-vous point at (" + rendezvousX + ", " + rendezvousY + ").");
-                return true;
-            } catch (NumberFormatException e) {
-                sendLogMessage("Invalid rendez-vous message format.");
-            }
-        }
         if (message.equals(READY_TO_ATTACK_MESSAGE)) {
             alliedReadyToAttack += 1;
             if (alliedReadyToAttack > 3) {
@@ -729,54 +336,37 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             return true;
         }
 
-        if (parts[0].equals(FIGHTINHG_ENEMY_MESSAGE) && parts.length == 4 && !isLost) {
-            gameHasStarted = true;
-            System.out.println("[DEBUG " + myID + "] Received FIGHTING_ENEMY_MESSAGE");
+        if (parts[0].equals(FIGHTING_ENEMY_MESSAGE) && parts.length == 4) {
             try {
                 double enemyX = Double.parseDouble(parts[1]);
                 double enemyY = Double.parseDouble(parts[2]);
                 String reportingAllyID = parts[3];
-                System.out.println("[DEBUG " + myID + "] Enemy at (" + enemyX + ", " + enemyY + ") reported by " + reportingAllyID);
                 // If no enemy detected, head toward the reported coordinates
                 ArrayList<IRadarResult> objects = this.detectRadar();
                 IRadarResult nearestEnemy = getNearestEnemy(objects, 0);
-                System.out.println("[DEBUG " + myID + "] nearestEnemy = " + nearestEnemy);
-                System.out.println("[DEBUG " + myID + "] currentTasks.isEmpty() = " + currentTasks.isEmpty());
-                // If no nearest enemy detected and not too close to the surroundings elements
-                if (nearestEnemy == null && !isObstacleTooClose(1.04)) {
+                if (nearestEnemy == null && !doCurrentTaskContain(Task.SHOOT_AND_HELP)) {
                     sendLogMessage("Ally reported enemy at (" + enemyX + ", " + enemyY + "). Heading there.");
-                    System.out.println("[DEBUG " + myID + "] Setting targetX=" + enemyX + ", targetY=" + enemyY);
                     targetX = enemyX;
                     targetY = enemyY;
-                    System.out.println("[DEBUG " + myID + "] Clearing tasks and adding SHOOT_AND_HELP");
                     currentTasks.clear();
                     currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_HELP, new TaskAttribute(reportingAllyID)));
-                    System.out.println("[DEBUG " + myID + "] SHOOT_AND_HELP task added, calling callNextTask()");
                     callNextTask();
                     return true;
-                } else {
-                    System.out.println("[DEBUG " + myID + "] Enemy already detected nearby, ignoring help request");
                 }
             } catch (NumberFormatException e) {
                 sendLogMessage("Invalid fighting enemy message format.");
-                System.out.println("[DEBUG " + myID + "] NumberFormatException: " + e.getMessage());
             }
         }
 
         if (parts[0].equals(NOT_FIGHTING_ENEMY_MESSAGE) && parts.length == 2) {
-            System.out.println("[DEBUG " + myID + "] Received NOT_FIGHTING_ENEMY_MESSAGE");
             String reportingAllyID = parts[1];
             // If currently in SHOOT_AND_HELP task targeting this ally, stop it
             if (!currentTasks.isEmpty() && currentTasks.getFirst().task == Task.SHOOT_AND_HELP) {
-                System.out.println("[DEBUG " + myID + "] Currently in SHOOT_AND_HELP");
-                if (!currentTasks.isEmpty()) {
-                    TaskAttribute currentTaskAttr = currentTasks.getFirst().attr;
-                    System.out.println("[DEBUG " + myID + "] currentTaskAttr.allyId = " + currentTaskAttr.allyId);
-                    if (currentTaskAttr.allyId != null && currentTaskAttr.allyId.equals(reportingAllyID)) {
-                        System.out.println("[DEBUG " + myID + "] Stopping SHOOT_AND_HELP, switching to SHOOT_AND_ADVANCE");
-                        currentTasks.clear();
-                        currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
-                    }
+
+                TaskAttribute currentTaskAttr = currentTasks.getFirst().attr;
+                if (currentTaskAttr.allyId != null && currentTaskAttr.allyId.equals(reportingAllyID)) {
+                    currentTasks.clear();
+                    currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
                 }
             }
         }
@@ -790,7 +380,6 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             return;
         }
         else {
-
             // Check if facing a wall
             boolean wallAhead = detectFront().getObjectType() == IFrontSensorResult.Types.WALL;
             if (wallAhead) {
@@ -805,23 +394,18 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 if (heading < Math.PI / 2) {
                     // Face vers l'est (0), tourner vers le sud (π/2)
                     targetHeading = -Math.PI / 2;
-                    System.out.println("Facing East, turning South");
                 } else if (heading < Math.PI) {
                     // Face vers le sud (π/2), tourner vers l'ouest (π)
                     targetHeading = Math.PI/2;
-                    System.out.println("Facing South, turning West");
                 } else if (heading < 3 * Math.PI / 2) {
                     // Face vers l'ouest (π), tourner vers le nord (3π/2)
                     targetHeading = -Math.PI;
-                    System.out.println("Facing West, turning North");
                 } else {
                     // Face vers le nord (3π/2 à 2π), tourner vers l'est (0)
                     targetHeading = 0;
-                    System.out.println("Facing North, turning East");
                 }
 
-                System.out.println("Heading (normalized): " + heading + " -> Target: " + targetHeading);
-                currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetHeading)));
+                currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(heading + targetHeading)));
                 return;
             }
 
@@ -841,10 +425,10 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         // Calculate enemy coordinates (direction is RELATIVE from radar -> convert to absolute)
         if (distanceToEnemy != -1) {
             double absDir = normalizeAngle(getHeading() + direction);
-            double ennemyX = myX + distanceToEnemy * Math.cos(absDir);
-            double ennemyY = myY + distanceToEnemy * Math.sin(absDir);
+            double enemyX = myX + distanceToEnemy * Math.cos(absDir);
+            double enemyY = myY + distanceToEnemy * Math.sin(absDir);
             // Send broadcast message when firing
-            broadcast(FIGHTINHG_ENEMY_MESSAGE + ";" + ennemyX + ";" + ennemyY + ";" + myID);
+            broadcast(FIGHTING_ENEMY_MESSAGE + ";" + enemyX + ";" + enemyY + ";" + myID);
         }
 
         for (IRadarResult obj : detectRadar()) {
@@ -905,76 +489,18 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         fire(direction);
     }
 
-    // Trouve l'index du coin le plus proche
-    // 0: Top-left, 1: Top-right, 2: Bottom-left, 3: Bottom-right
-    private int closestCornerIndex(double x, double y) {
-        double[][] corners = {
-                {0.0, 0.0},
-                {3000, 0.0},
-                {0.0, 2000},
-                {3000, 2000}
-        };
-        int closestIndex = -1;
-        double minDistance = Double.MAX_VALUE;
-        for (int i = 0; i < corners.length; i++) {
-            double dx = x - corners[i][0];
-            double dy = y - corners[i][1];
-            double distance = Math.hypot(dx, dy);
-            if (distance < minDistance) {
-                minDistance = distance;
-                closestIndex = i;
-            }
-        }
-        return closestIndex;
-    }
-
     // Déplacement en ligne droite vers (targetX, targetY)
     private void headTowardCoord() {
-        System.out.println("[DEBUG " + myID + "] headTowardCoord() called");
         double dx = targetX - myX;
         double dy = targetY - myY;
         double distance = Math.hypot(dx, dy);
-        System.out.println("[DEBUG " + myID + "] distance to target = " + distance);
 
         if (distance <= 5.0) {
-            // Verify surronding
-            ArrayList<IRadarResult> radarResults = detectRadar();
-            for (IRadarResult result : radarResults) {
-                if (result.getObjectType() == IRadarResult.Types.OpponentMainBot ||
-                        result.getObjectType() == IRadarResult.Types.OpponentSecondaryBot ||
-                        result.getObjectType() == IRadarResult.Types.Wreck) {
-                    // If no ennmy or wreck is found near, consider the bot should be lost
-                    sendLogMessage("No enemy or wreck detected near target coordinates, considering lost.");
-                    isLost = true;
-                    currentTasks.clear();
-                    currentTasks.addFirst(new QueuedTask(Task.LOST_WANDERING));
-                    wanderDirection = Math.random() * 2 * Math.PI;
-                    wanderSteps = 0;
-                    return;
-                }
-            }
-
 
             sendLogMessage("Reached target coordinates (" + targetX + ", " + targetY + ").");
-            System.out.println("[DEBUG " + myID + "] Target reached!");
             // Remove SHOOT_AND_HELP task and switch to SHOOT_AND_ADVANCE
             if (currentTasks.getFirst().task == Task.SHOOT_AND_HELP) {
-                // Check if there's enemy nearby before switching
-                // If no enemy, consider lost
-                System.out.println("[DEBUG " + myID + "] Removing SHOOT_AND_HELP, switching to SHOOT_AND_ADVANCE");
                 currentTasks.removeFirst();
-                if (null == getNearestEnemy(detectRadar(), 0)) {
-                    System.out.println("[DEBUG " + myID + "] No enemy nearby after reaching target, considering lost");
-                    isLost = true;
-                    currentTasks.clear();
-                    currentTasks.addFirst(new QueuedTask(Task.LOST_WANDERING));
-                    wanderDirection = Math.random() * 2 * Math.PI;
-                    wanderSteps = 0;
-                    return;
-                }
-                if (!currentTasks.isEmpty()) {
-                    currentTasks.removeFirst();
-                }
                 currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
                 callNextTask();
             }
@@ -983,91 +509,23 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
         double directionToTarget = Math.atan2(dy, dx);
         Parameters.Direction turnDirection = getOptimalTurnDirectionWithHysteresis(directionToTarget);
-        System.out.println("[DEBUG " + myID + "] directionToTarget=" + directionToTarget + ", turnDirection=" + turnDirection);
         if (turnDirection != null) {
-            System.out.println("[DEBUG " + myID + "] Turning " + turnDirection);
             stepTurn(turnDirection);
         } else {
-            System.out.println("[DEBUG " + myID + "] Moving forward");
             myMove();
         }
-    }
-
-    private boolean getIntoFormation() {
-        // définir position cible selon myID
-        if (!(Math.abs(myX - targetX) < 5.0 && Math.abs(myY - targetY) < 5.0)) {
-            if (myID.equals(MB1)) {
-                targetX = rendezvousX - RDV_OFFSET_X;
-                targetY = rendezvousY - (RDV_OFFSET_Y + 35);
-            } else if (myID.equals(MB2)) {
-                targetX = rendezvousX - (RDV_OFFSET_X + 50);
-                targetY = rendezvousY - 20;
-            } else {
-                targetX = rendezvousX - RDV_OFFSET_X;
-                targetY = rendezvousY + RDV_OFFSET_Y;
-            }
-
-            sendLogMessage("Heading to formation (" + targetX + ", " + targetY + ")");
-            headTowardCoord();
-        }
-        else if (!isSameDirection(getHeading(), rendezvousAngle)) {
-            // Aim at rendezvousAngle
-            double directionToTarget = rendezvousAngle;
-            Parameters.Direction turnDirection = getOptimalTurnDirectionWithHysteresis(directionToTarget);
-            if (turnDirection != null) {
-                stepTurn(turnDirection);
-                sendLogMessage("Adjusting heading to rendezvous angle.");
-            }
-        }
-        else {
-                sendLogMessage("Main bot in formation position.");
-                broadcast(READY_TO_ATTACK_MESSAGE);
-                isOccupied = false;
-                if (!currentTasks.isEmpty())
-                    currentTasks.removeFirst();
-                currentTasks.addFirst(new QueuedTask(Task.COVER_AREA));
-                alliedReadyToAttack+=1;
-                callNextTask();
-                return false;
-            }
-            return true;
     }
 
     // Déplacement
 
     public void myMove() {
-        // Correction d'odométrie par les murs avant de bouger
-        correctOdometryWithWalls();
-
-        // Check for WAITING_FOR_ALLY_STATUS task
-        for (int i = 0; i < currentTasks.size(); i++) {
-            if (currentTasks.get(i).task == Task.WAITING_FOR_ALLY_STATUS) {
-                if (currentTasks.get(i).attr.isTargetWaitingStepsReached()) {
-                    // Remove the waiting task
-                    currentTasks.remove(i);
-                    break;
-                } else {
-                    currentTasks.get(i).attr.incrementWaitingStep();
-                    sendLogMessage("Waiting for ally status... Step " + currentTasks.get(i).attr.getCurrentStep());
-                    return; // Do not move while waiting
-                }
-            }
-        }
-
         // Check if facing wall
         if (detectFront().getObjectType() == IFrontSensorResult.Types.WALL) {
             sendLogMessage("Wall detected ahead: initiating avoidance maneuver.");
-            currentTasks.clear();
             // Turn away from the wall
             double targetHeading = normalizeAngle(getHeading() + Math.random() * Math.PI); // Turn right 90 degrees
             currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(10)));
             currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetHeading)));
-            // Becomes lost
-            currentTasks.addFirst(new QueuedTask(Task.LOST_WANDERING, new TaskAttribute(LOST_THRESHOLD)));
-            isLost = true;
-            wanderDirection = 0;
-            wanderSteps = 0;
-            stepsSinceLastCorrection = 0;
             return;
         }
 
@@ -1077,9 +535,9 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         }
 
         if (currentTasks.getFirst().task.equals(Task.MOVE_A_BIT)) {
-                updateOdometryAfterMove();
-                move();
-                return;
+            updateOdometryAfterMove();
+            move();
+            return;
         }
 
         if (isObstacleTooClose(1.04)) {
@@ -1088,7 +546,6 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 currentTasks.addFirst(new QueuedTask(Task.GO_AROUND_OBJECT));
                 sendLogMessage("Object too close: initiating go around maneuver.");
             } else {
-                System.out.println("couou");
                 sendLogMessage("Object too close: already trying to go around.");
             }
             return;
@@ -1135,29 +592,33 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         }
 
         // 1 chance out of 30 to just move a back a bit instead of going around
-        if (Math.random() < 1.0 / 20.0) {
+        if (Math.random() < 5.0 / 20.0) {
             sendLogMessage("Go around maneuver: opting to move back a bit instead.");
             // Turn around first
-            currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(40)));
             currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(normalizeAngle(getHeading() + Math.PI))));
+            currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(40)));
         }
         else {
             // objectDirection is RELATIVE to our current heading
-            double objectDirection = normalizeAngle(closestObject.getObjectDirection());
-
-            // Turn AWAY from the obstacle (if obstacle is on the right, turn left; if on the left, turn right)
-            double sideStep = (objectDirection >= 0) ? -Math.PI / 2 : Math.PI / 2;
-
-            // Small extra bias so we don't end up tangentially glued to the wreck
-            double bias = (objectDirection >= 0) ? -Math.PI / 12 : Math.PI / 12;
-
-            double targetHeading = normalizeAngle(getHeading() + sideStep + bias);
+            double targetHeading = getTargetHeading(closestObject);
 
             // Sequence: turn away, then move forward a bit to clear the obstacle
             currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(40)));
-            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute( )));
-            currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(30)));
+            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetHeading)));
         }
+    }
+
+    private double getTargetHeading(IRadarResult closestObject) {
+        double objectDirection = normalizeAngle(closestObject.getObjectDirection());
+
+        // Turn AWAY from the obstacle (if obstacle is on the right, turn left; if on the left, turn right)
+        double sideStep = (objectDirection >= 0) ? -Math.PI / 2 : Math.PI / 2;
+
+        // Small extra bias so we don't end up tangentially glued to the wreck
+        double bias = (objectDirection >= 0) ? -Math.PI / 12 : Math.PI / 12;
+
+        double targetHeading = normalizeAngle(getHeading() + sideStep + bias);
+        return targetHeading;
     }
 
     private boolean doCurrentTaskContain(Task obj) {
@@ -1225,29 +686,12 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         ArrayList<IRadarResult> objects = this.detectRadar();
         IRadarResult nearestEnemy = getNearestEnemy(objects, 0);
         if (nearestEnemy != null) {
-            // Suppoe there's no ally in front of us
+            // Suppose there's no ally in front of us
             double direction = nearestEnemy.getObjectDirection();
             double distance = nearestEnemy.getObjectDistance();
             myFire(direction, distance);
-            System.out.println("sent fire to direction " + direction + " at distance " + distance);
             return true;
         }
         return false;
-    }
-
-    // While waiting for ally to join the formation, cover the area by spraying bullets
-    private void coverArea() {
-        // Try to attack nearest enemy
-        if (!attackNearestEnemy()) {
-            // Spray randomly
-            myFire(getHeading() + (Math.random() - 0.5) * Math.PI / 4, -1);
-        }
-    }
-
-    public boolean arrivedAtCoord(double x, double y) {
-        double dx = myX - x;
-        double dy = myY - y;
-        double distance = Math.hypot(dx, dy);
-        return distance < 5.0;
     }
 }
