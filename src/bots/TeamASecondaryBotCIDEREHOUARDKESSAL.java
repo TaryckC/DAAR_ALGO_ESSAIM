@@ -458,7 +458,7 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
         return false;
     }
 
-    private static final double ALLY_TOO_CLOSE_DISTANCE = 100; // ajuste (15-30)
+    private static final double ALLY_TOO_CLOSE_DISTANCE = 200; // ajuste (15-30)
 
     private boolean isAllyTooClose() {
         for (IRadarResult obj : detectRadar()) {

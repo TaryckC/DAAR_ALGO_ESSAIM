@@ -144,7 +144,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
     // Lost detection
     private int stepsSinceLastCorrection = 0;
-    private static final int LOST_THRESHOLD = 2000;
+    private static final int LOST_THRESHOLD = 3000;
     private boolean isLost = false;
     private double wanderDirection = 0;
     private int wanderSteps = 0;
@@ -553,7 +553,8 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         // Either shoot or advance
         if (shootOrAdvance % 2 == 0) {
             shootOrAdvance += 1;
-            myFire(getHeading(), -1);
+            // Shoots randomly toward the target direction
+            myFire(getHeading() + (Math.random() - 0.5) * Math.PI / 6, -1);
         } else {
             shootOrAdvance -= 1;
             headTowardCoord();
@@ -831,10 +832,11 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     }
 
     public void myFire(double direction, double distanceToEnemy) {
-        // Calculate enemy coordinates
+        // Calculate enemy coordinates (direction is RELATIVE from radar -> convert to absolute)
         if (distanceToEnemy != -1) {
-            double ennemyX = myX + distanceToEnemy * Math.cos(direction);
-            double ennemyY = myY + distanceToEnemy * Math.sin(direction);
+            double absDir = normalizeAngle(getHeading() + direction);
+            double ennemyX = myX + distanceToEnemy * Math.cos(absDir);
+            double ennemyY = myY + distanceToEnemy * Math.sin(absDir);
             // Send broadcast message when firing
             broadcast(FIGHTINHG_ENEMY_MESSAGE + ";" + ennemyX + ";" + ennemyY + ";" + myID);
         }
@@ -848,6 +850,39 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 if (Math.abs(angleDifference) < ANGLEPRECISION) {
                     sendLogMessage("Ally in firing line. Aborting fire.");
                     return; // Abort firing
+                }
+            }
+        }
+
+        // Check if the enemy is behind an obstacle (wreck in the bullet path)
+        if (distanceToEnemy != -1) {
+            for (IRadarResult obj : detectRadar()) {
+                if (obj.getObjectType() == IRadarResult.Types.Wreck) {
+                    double d = obj.getObjectDistance();
+                    double r = obj.getObjectRadius();
+
+                    // Both are relative to our heading
+                    double angleToObj = normalizeAngle(obj.getObjectDirection());
+                    double angleDiff = normalizeAngle(direction - angleToObj);
+
+                    double lateral = d * Math.sin(angleDiff);
+                    double forward = d * Math.cos(angleDiff);
+
+                    // Obstacle blocks the line of fire if it's in front of us AND before the enemy
+                    if (forward > 0 && forward < distanceToEnemy && Math.abs(lateral) < r) {
+                        sendLogMessage("Enemy behind wreck: repositioning for a clearer shot.");
+
+                        // Avoid stacking infinite reposition tasks
+                        if (!doCurrentTaskContain(Task.TURN) && !doCurrentTaskContain(Task.MOVE_A_BIT) && !doCurrentTaskContain(Task.GO_AROUND_OBJECT)) {
+                            // Move to the side opposite to the obstacle's lateral position
+                            double sign = (lateral >= 0) ? -1.0 : 1.0;
+                            double delta = sign * (Math.PI / 6);
+
+                            currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(50)));
+                            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(normalizeAngle(getHeading() + delta))));
+                        }
+                        return; // Abort fire for this step
+                    }
                 }
             }
         }
@@ -887,6 +922,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         System.out.println("[DEBUG " + myID + "] distance to target = " + distance);
 
         if (distance <= 5.0) {
+
             sendLogMessage("Reached target coordinates (" + targetX + ", " + targetY + ").");
             System.out.println("[DEBUG " + myID + "] Target reached!");
             // Remove SHOOT_AND_HELP task and switch to SHOOT_AND_ADVANCE
@@ -986,6 +1022,16 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             }
         }
 
+        // Check if facing wall
+        if (detectFront().getObjectType() == IFrontSensorResult.Types.WALL) {
+            sendLogMessage("Wall detected ahead: initiating avoidance maneuver.");
+            // Turn away from the wall
+            double targetHeading = normalizeAngle(getHeading() + Math.random() * Math.PI); // Turn right 90 degrees
+            currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(10)));
+            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetHeading)));
+            return;
+        }
+
         if (currentTasks.getFirst().task.equals(Task.GO_AROUND_OBJECT)) {
             goAroundObject();
             return;
@@ -1049,20 +1095,29 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             return;
         }
 
-        // objectDirection is RELATIVE to our current heading
-        double objectDirection = normalizeAngle(closestObject.getObjectDirection());
+        // 1 chance out of 30 to just move a back a bit instead of going around
+        if (Math.random() < 1.0 / 20.0) {
+            sendLogMessage("Go around maneuver: opting to move back a bit instead.");
+            // Turn around first
+            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(normalizeAngle(getHeading() + Math.PI))));
+            currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(40)));
+        }
+        else {
+            // objectDirection is RELATIVE to our current heading
+            double objectDirection = normalizeAngle(closestObject.getObjectDirection());
 
-        // Turn AWAY from the obstacle (if obstacle is on the right, turn left; if on the left, turn right)
-        double sideStep = (objectDirection >= 0) ? -Math.PI / 2 : Math.PI / 2;
+            // Turn AWAY from the obstacle (if obstacle is on the right, turn left; if on the left, turn right)
+            double sideStep = (objectDirection >= 0) ? -Math.PI / 2 : Math.PI / 2;
 
-        // Small extra bias so we don't end up tangentially glued to the wreck
-        double bias = (objectDirection >= 0) ? -Math.PI / 12 : Math.PI / 12;
+            // Small extra bias so we don't end up tangentially glued to the wreck
+            double bias = (objectDirection >= 0) ? -Math.PI / 12 : Math.PI / 12;
 
-        double targetHeading = normalizeAngle(getHeading() + sideStep + bias);
+            double targetHeading = normalizeAngle(getHeading() + sideStep + bias);
 
-        // Sequence: turn away, then move forward a bit to clear the obstacle
-        currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(40)));
-        currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetHeading)));
+            // Sequence: turn away, then move forward a bit to clear the obstacle
+            currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(40)));
+            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetHeading)));
+        }
     }
 
     private boolean doCurrentTaskContain(Task obj) {
