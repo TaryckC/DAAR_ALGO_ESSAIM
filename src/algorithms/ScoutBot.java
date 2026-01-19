@@ -9,6 +9,9 @@ import robotsimulator.Bot;
 import java.util.ArrayList;
 import java.util.Random;
 
+/**
+ * Detect cible s'eloigne et envoi position aux MainBots
+ */
 public class ScoutBot extends Brain {
     private enum State {
         EVADING,
@@ -334,7 +337,7 @@ public class ScoutBot extends Brain {
         IFrontSensorResult front = detectFront();
 
         // Si on détecte un MUR (et pas autre chose)
-        if (front.getObjectType() == IFrontSensorResult.Types.WALL) {
+        if (front.getObjectType() != IFrontSensorResult.Types.NOTHING) {
             // On tourne à GAUCHE
             this.targetHeading = normalizeAngle(getHeading() - (Math.PI / 2));
             //state = State.AVOID_WALL;

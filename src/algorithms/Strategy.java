@@ -16,6 +16,13 @@ import robotsimulator.Brain;
  * - Fog-of-war : projection simple de la position ennemie
  * - Kiting : stop & turn pour viser, puis ajustement de distance
  * - Communication : envoi/écoute de TARGET:x:y:heading:speed
+ *
+ *
+ * Eviter les wrecks : recule puis se deplace 50 steps à gauche ou droite selon la position du wreck
+ *
+ * Utiliser coordonner des main bots plutot que le radar et definir une zone de 500 autour du lead envoyer
+ * message tout les 50 steps pour verifier si les robots sont
+ *
  */
 public class Strategy extends Brain {
 
@@ -32,28 +39,38 @@ public class Strategy extends Brain {
         FOLLOW,
         MOVE_TO_TARGET
     }
+    private final static double LEADER_RANGE = 400.0;
     private State state = State.MOVE;
     private final static double HEADING_PRECISION = 0.05;
-
+    private double myX,myY;
     private final static double DISPERSION_TIR = 0.05;
-    private final static int CHANGE_DIR = 1000;
+    private final static int CHANGE_DIR = 4000;
     private Random rand = new Random();
     private int aliveMainBot = 3;
     private int leaderMoveTimer = 0;
 
     private double targetHeading = 0;
+
     // Variables persistantes pour la cible
     private double targetX = -1;
     private double targetY = -1;
     private double targetDir = 0;
     private boolean hasTarget = false;
 
-    private int targetLockTimer = 0; // Le compte à rebours
-    private final static int LOCK_DURATION = 150; // On reste fixé 50 steps (environ 2-3 sec)
+    private int targetLockTimer = 0;
+    private int avoidTimer = 0;
+    private boolean isAvoidingObstacles = false;// Le compte à rebours
+    private final static int LOCK_DURATION = 300;
+    private final static int AVOID_DURATION = 200;// On reste fixé 50 steps (environ 2-3 sec)
     private final static double SAME_TARGET_THRESHOLD = 400.0;
 
     private int lockTimer = 0;
     private boolean lockCible = false;
+
+    private int sendInfoTimer = 0;
+    private static int INFO_BROADCAST_DELAY = 50;
+
+
     @Override
     public void bind(Bot bot) {
         this.bot = bot;
@@ -74,9 +91,18 @@ public class Strategy extends Brain {
         // DÉFINITION DU LEADER : On décide arbitrairement que le rank 3 est le chef
         // (A ajuster selon ton équipe : regarde les logs pour voir ton ID)
         if (this.myRank == 3) {
+            myX = Parameters.teamAMainBot2InitX;
+            myY = Parameters.teamAMainBot2InitY;
             isLeader = true;
         }
-
+        else if(this.myRank == 1){
+            myX = Parameters.teamAMainBot3InitX;
+            myY = Parameters.teamAMainBot3InitY;
+        }
+        else if(this.myRank == 2){
+            myX = Parameters.teamAMainBot1InitX;
+            myY = Parameters.teamAMainBot1InitY;
+        }
         sendLogMessage("Activé. Rank: " + myRank + " | Leader: " + isLeader);
     }
 
@@ -84,7 +110,11 @@ public class Strategy extends Brain {
     public void step() {
 
         if (getHealth() <= 0) return;
-
+        if(sendInfoTimer > INFO_BROADCAST_DELAY){
+            sendInfoTimer = 0;
+            sendMainInfo();
+        }
+        sendMainInfo();
         // ---  DETECTION  ---
         ArrayList<IRadarResult> radar = detectRadar();
 
@@ -94,6 +124,10 @@ public class Strategy extends Brain {
         if (checkWallTurnLeft()) {
             myMove(); // On applique la rotation immédiatement
             return;   // On s'arrête là pour ce tour, on ne réfléchit pas plus loin.
+        }
+        if(processAvoidWallMessage(messages)){
+            myMove();
+            return;
         }
         detectSecondaryBots(detectFront());
 
@@ -119,7 +153,7 @@ public class Strategy extends Brain {
             }else {
                 if (isLeader) {
                     // Le chef utilise SON radar pour compter les troupes
-                    performLeaderLogic(radar);
+                    performLeaderLogic(radar,messages);
                 } else {
                     // Les suiveurs écoutent la radio pour trouver le chef
                     performFollowerLogic(messages, radar);
@@ -242,7 +276,6 @@ public class Strategy extends Brain {
         for (IRadarResult r : radar) {
             if (r.getObjectType() == IRadarResult.Types.OpponentMainBot ||
                     r.getObjectType() == IRadarResult.Types.OpponentSecondaryBot) {
-                System.out.println("detected");;
                 if (r.getObjectDistance() < minDistance) {
                     minDistance = r.getObjectDistance();
                     bestTarget = r;
@@ -263,6 +296,8 @@ public class Strategy extends Brain {
 
         return null;
     }
+
+
     private boolean isHeadingReached(double target) {
         return Math.abs(Math.sin(getHeading() - target)) < HEADING_PRECISION;
     }
@@ -293,16 +328,68 @@ public class Strategy extends Brain {
     }
 
 
-
+    //Verifier que l'ennemie est bien visible avant de tirer utiliser IfrontSensor pour verifier si il y a une wreck devant.
     private void performCombat(double dir) {
 
         double dist = Math.sqrt(Math.pow(targetX - bot.getX(), 2) + Math.pow(targetY - bot.getY(), 2));
+        // Check if the enemy is behind an obstacle (wreck in the bullet path)
+        /*if (distanceToEnemy != -1) {
+            for (IRadarResult obj : detectRadar()) {
+                if (obj.getObjectType() == IRadarResult.Types.Wreck) {
+                    double d = obj.getObjectDistance();
+                    double r = obj.getObjectRadius();
+
+                    // Both are relative to our heading
+                    double angleToObj = normalizeAngle(obj.getObjectDirection());
+                    double angleDiff = normalizeAngle(direction - angleToObj);
+
+                    double lateral = d * Math.sin(angleDiff);
+                    double forward = d * Math.cos(angleDiff);
+
+                    // Obstacle blocks the line of fire if it's in front of us AND before the enemy
+                    if (forward > 0 && forward < distanceToEnemy && Math.abs(lateral) < r + Parameters.bulletRadius) {
+                        sendLogMessage("Enemy behind wreck: repositioning for a clearer shot.");
+
+                        // Avoid stacking infinite reposition tasks
+                        if (!doCurrentTaskContain(Task.TURN) && !doCurrentTaskContain(Task.MOVE_A_BIT) && !doCurrentTaskContain(Task.GO_AROUND_OBJECT)) {
+                            // Move to the side opposite to the obstacle's lateral position
+                            double sign = (lateral >= 0) ? -1.0 : 1.0;
+                            double delta = sign * (Math.PI / 6);
+
+                            currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(50)));
+                            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(normalizeAngle(getHeading() + delta))));
+                        }
+                        return; // Abort fire for this step
+                    }
+                }
+            }
+        }*/
         if(dist<1000){
-            if (isFacing(dir)) {
-                double angleAleatoire = (rand.nextDouble() - 0.5) * DISPERSION_TIR;
-                fire(dir );
-            } else {
-                turnTowards(dir);
+            isAvoidingObstacles = avoidWreck(detectRadar(), detectFront());
+            if(isAvoidingObstacles){
+                avoidTimer++;
+                if(avoidTimer <50){
+                    moveBack();
+                }
+
+                else if(avoidTimer < AVOID_DURATION){
+                    System.out.println("Evitement en cours...");
+                    myMove();
+                }
+                else{
+                    isAvoidingObstacles = false;
+                    avoidTimer = 0;
+                }
+
+                return;
+            }
+            else {
+                if (isFacing(dir)) {
+                    double angleAleatoire = (rand.nextDouble() - 0.5) * DISPERSION_TIR;
+                    fire(dir );
+                } else {
+                    turnTowards(dir);
+                }
             }
 
         }
@@ -350,16 +437,25 @@ public class Strategy extends Brain {
         return false;
     }
 
-    public void performLeaderLogic(ArrayList<IRadarResult> radar) {
-
-        int countAlliesMainRobots = 0;
-        for(IRadarResult r: radar){
-            if(r.getObjectType() == IRadarResult.Types.TeamMainBot ){
-                countAlliesMainRobots++;
+    public int countMainBotsInRange(ArrayList<String> messages){
+        int count = 0;
+        for(String msg: messages){
+            if(msg.startsWith("MAIN_INFO:")){
+                String[] parts = msg.split(":");
+                this.targetX = Double.parseDouble(parts[1]);
+                this.targetY = Double.parseDouble(parts[2]);
+                double dist = Math.sqrt(Math.pow(targetX - bot.getX(), 2) + Math.pow(targetY - bot.getY(), 2));
+                if(dist < LEADER_RANGE){
+                    count++;
+                }
             }
         }
+        return count;
 
+    }
 
+    public void performLeaderLogic(ArrayList<IRadarResult> radar,ArrayList<String> messages) {
+        int countAlliesMainRobots = countMainBotsInRange(messages);
 
         if(countAlliesMainRobots < aliveMainBot-1){
             broadcast("LEADER_INFO:" + bot.getX() + ":" + bot.getY() + ":" + getHeading()+":WAIT");
@@ -375,6 +471,10 @@ public class Strategy extends Brain {
 
             myMove();
         }
+    }
+
+    public void sendMainInfo(){
+        broadcast("MAIN_INFO:" + bot.getX() + ":" + bot.getY() + ":" + getHeading()+":"+myRank+":"+isLeader);
     }
 
     public void performFollowerLogic(ArrayList<String> messages,ArrayList<IRadarResult> radarResults) {
@@ -394,7 +494,7 @@ public class Strategy extends Brain {
 
                     double dist = Math.sqrt(Math.pow(leaderX - myX, 2) + Math.pow(leaderY - myY, 2));
 
-                    if (dist < 200) {
+                    if (dist < 300) {
 
                         return;
                     }
@@ -438,7 +538,11 @@ public class Strategy extends Brain {
         // 1. On s'oriente vers la direction cible
         if (!isHeadingReached(this.targetHeading)) {
             turnTowards(this.targetHeading);
-        } else {
+        }
+
+        else {
+            myX += Parameters.teamAMainBotSpeed * Math.cos(getHeading());
+            myY += Parameters.teamAMainBotSpeed * Math.sin(getHeading());
             // 2. On avance
             move();
         }
@@ -454,12 +558,24 @@ public class Strategy extends Brain {
 
     private boolean checkWallTurnLeft() {
         IFrontSensorResult front = detectFront();
+        ArrayList<IRadarResult> radar = detectRadar();
+        int count = 0;
+        for(IRadarResult r: radar){
+            if(r.getObjectType() == IRadarResult.Types.TeamMainBot ){
+                count++;
+            }
+        }
 
+        if(count == aliveMainBot){
+            this.targetHeading = normalizeAngle(getHeading() - (Math.PI / 2));
+            broadcast("AVOID_WALL:"+targetHeading+":" + bot.getX() + ":" + bot.getY());
+            return true;
+        }
         // Si on détecte un MUR (et pas autre chose)
         if (front.getObjectType() == IFrontSensorResult.Types.WALL) {
             // On tourne à GAUCHE
             this.targetHeading = normalizeAngle(getHeading() - (Math.PI / 2));
-            //state = State.AVOID_WALL;
+
             return true;
         }
 
@@ -535,6 +651,97 @@ public class Strategy extends Brain {
 
         fire(direction);
     }*/
+
+
+        public boolean avoidWreck(ArrayList<IRadarResult> radar, IFrontSensorResult frontSensorResult) {
+            if (IFrontSensorResult.Types.NOTHING == frontSensorResult.getObjectType() || IFrontSensorResult.Types.BULLET == frontSensorResult.getObjectType()) {
+                return false;
+            }
+            this.targetHeading = normalizeAngle(getHeading() - (Math.PI / 2));
+
+            return true;
+
+            /*          for (IRadarResult obj : detectRadar()) {
+                if (obj.getObjectType() == IRadarResult.Types.Wreck) {
+                    double d = obj.getObjectDistance();
+                    double r = obj.getObjectRadius();
+
+                    // Both are relative to our heading
+                    double angleToObj = normalizeAngle(obj.getObjectDirection());
+                    double angleDiff = normalizeAngle(direction - angleToObj);
+
+                    double lateral = d * Math.sin(angleDiff);
+                    double forward = d * Math.cos(angleDiff);
+
+                    // Obstacle blocks the line of fire if it's in front of us AND before the enemy
+                    if (forward > 0 && forward < distanceToEnemy && Math.abs(lateral) < r + Parameters.bulletRadius) {
+                        sendLogMessage("Enemy behind wreck: repositioning for a clearer shot.");
+
+                        // Avoid stacking infinite reposition tasks
+                        if (!doCurrentTaskContain(Task.TURN) && !doCurrentTaskContain(Task.MOVE_A_BIT) && !doCurrentTaskContain(Task.GO_AROUND_OBJECT)) {
+                            // Move to the side opposite to the obstacle's lateral position
+                            double sign = (lateral >= 0) ? -1.0 : 1.0;
+                            double delta = sign * (Math.PI / 6);
+
+                            currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(50)));
+                            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(normalizeAngle(getHeading() + delta))));
+                        }
+                        return; // Abort fire for this step
+                    }
+                }
+            }
+            }*/
+        }
+
+
+        private IRadarResult getFrontTarget(ArrayList<IRadarResult> radar, IFrontSensorResult frontResult) {
+            IRadarResult bestTarget = null;
+            double minDistance = Double.MAX_VALUE;
+
+            // On définit une "tolérance" angulaire.
+            // 0.2 radians (environ 11 degrés) suffit pour couvrir le capteur avant.
+            double FRONT_ANGLE_TOLERANCE = 0.2;
+
+            for (IRadarResult r : radar) {
+                // 1. Vérification de l'angle : Est-ce qu'il est "en face" ?
+                // getObjectDirection() renvoie l'angle RELATIF (0 = devant, + = gauche, - = droite ou inversement)
+                if (Math.abs(r.getObjectDirection()) < FRONT_ANGLE_TOLERANCE) {
+
+                    // 2. Vérification de distance : On veut le plus proche (celui qu'on touche)
+                    if (r.getObjectDistance() < minDistance) {
+                        minDistance = r.getObjectDistance();
+                        bestTarget = r;
+                    }
+                }
+            }
+
+            return bestTarget;
+        }
+        public boolean processAvoidWallMessage(ArrayList<String> messages) {
+            for (String msg : messages) {
+                if (msg.startsWith("AVOID_WALL:")) {
+                    String[] parts = msg.split(":");
+                    double avoidHeading = Double.parseDouble(parts[1]);
+                    double avoidX = Double.parseDouble(parts[2]);
+                    double avoidY = Double.parseDouble(parts[3]);
+
+                    // Calcul de la distance entre moi et le bot qui évite le mur
+                    double dx = avoidX - bot.getX();
+                    double dy = avoidY - bot.getY();
+                    double dist = Math.sqrt(dx * dx + dy * dy);
+
+                    // Si ce bot est proche de moi (ex: moins de 300 pixels), j'évite aussi
+                    if (dist < 300) {
+                        System.out.println("Avoiding wall as per teammate message...");
+                        this.targetHeading = avoidHeading;
+                        return true; // J'ai traité un message d'évitement
+                    }
+                }
+            }
+            return false; // Aucun message d'évitement traité
+        }
+
+
 
 
 }
