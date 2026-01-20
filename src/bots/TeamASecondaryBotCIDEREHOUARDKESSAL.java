@@ -3,6 +3,7 @@ package bots;
 import characteristics.IFrontSensorResult;
 import characteristics.IRadarResult;
 import characteristics.Parameters;
+import robotsimulator.Bot;
 import robotsimulator.Brain;
 
 import java.util.ArrayList;
@@ -42,7 +43,7 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
         // ATTACK TASKS
         ATTACK_NEAREST_ENEMY, MOVE_FORWARD, TURN_TOWARD_TARGET, WAITING_FOR_ALLY_STATUS,
 
-        ROAM_AND_AVOID_ATTACKS, MOVE_A_BIT, TURN // Robot perdu, se déplace aléatoirement pour trouver un allié
+        ROAM_AND_AVOID_ATTACKS, MOVE_A_BIT, MOVE_BACK_A_BIT, TURN // Robot perdu, se déplace aléatoirement pour trouver un allié
     }
 
     private static class TaskAttribute {
@@ -84,6 +85,8 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
     private double myX;
     private double myY;
 
+    private Bot bot;
+
     @Override
     public void activate() {
         myID = SB1;
@@ -98,78 +101,31 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
         }
 
         taskQueue = new LinkedList<>();
-
         taskQueue.addFirst(new QueuedTask(Task.ROAM_AND_AVOID_ATTACKS));
-
     }
 
-    // ===================== ODOMETRY CORRECTION =====================
-
-    private void correctOdometryWithWalls() {
-        IFrontSensorResult frontSensor = detectFront();
-        if (frontSensor.getObjectType() != IFrontSensorResult.Types.WALL) {
-            return;
-        }
-
-        double heading = getHeading();
-        while (heading < 0) heading += 2 * Math.PI;
-        while (heading >= 2 * Math.PI) heading -= 2 * Math.PI;
-
-        double distanceToWall = FRONT_SENSOR_RANGE;
-        double tolerance = Math.PI / 6;
-
-        if (Math.abs(heading - 0) < tolerance || Math.abs(heading - 2*Math.PI) < tolerance) {
-            double correctedX = ARENA_WIDTH - distanceToWall - BOT_RADIUS;
-            if (Math.abs(myX - correctedX) > 50) {
-                myX = correctedX;
-            }
-        }
-        else if (Math.abs(heading - Math.PI/2) < tolerance) {
-            double correctedY = ARENA_HEIGHT - distanceToWall - BOT_RADIUS;
-            if (Math.abs(myY - correctedY) > 50) {
-                myY = correctedY;
-            }
-        }
-        else if (Math.abs(heading - Math.PI) < tolerance) {
-            double correctedX = distanceToWall + BOT_RADIUS;
-            if (Math.abs(myX - correctedX) > 50) {
-                myX = correctedX;
-            }
-        }
-        else if (Math.abs(heading - 3*Math.PI/2) < tolerance || Math.abs(heading + Math.PI/2) < tolerance) {
-            double correctedY = distanceToWall + BOT_RADIUS;
-            if (Math.abs(myY - correctedY) > 50) {
-                myY = correctedY;
-            }
-        }
+    @Override
+    public void bind(Bot bot) {
+        this.bot = bot;
+        super.bind(bot);
     }
 
-    private void clampPositionToArena() {
-        double oldX = myX, oldY = myY;
-
-        if (myX < BOT_RADIUS)
-            myX = BOT_RADIUS;
-        if (myX > ARENA_WIDTH - BOT_RADIUS)
-            myX = ARENA_WIDTH - BOT_RADIUS;
-        if (myY < BOT_RADIUS)
-            myY = BOT_RADIUS;
-        if (myY > ARENA_HEIGHT - BOT_RADIUS)
-            myY = ARENA_HEIGHT - BOT_RADIUS;
-
-        if (oldX != myX || oldY != myY) {
+    private void updateOdometryAfterMove(boolean forward) {
+        if (forward) {
+            myX = this.myX + Parameters.teamASecondaryBotSpeed * Math.cos(this.getHeading());
+            myY = this.myY + Parameters.teamASecondaryBotSpeed * Math.sin(this.getHeading());
+        } else {
+            myX = this.myX - Parameters.teamASecondaryBotSpeed * Math.cos(this.getHeading());
+            myY = this.myY - Parameters.teamASecondaryBotSpeed * Math.sin(this.getHeading());
         }
-    }
-
-    private void updateOdometryAfterMove() {
-        myX = this.myX + Parameters.teamASecondaryBotSpeed * Math.cos(this.getHeading());
-        myY = this.myY + Parameters.teamASecondaryBotSpeed * Math.sin(this.getHeading());
-
-        clampPositionToArena();
     }
 
     public void callNextTask() {
         if (!taskQueue.isEmpty()) {
             switch (taskQueue.getFirst().task) {
+                case MOVE_BACK_A_BIT:
+                    moveBackAbit();
+                    break;
                 case MOVE_A_BIT:
                     moveAbit();
                     break;
@@ -192,27 +148,71 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
         }
     }
 
+    private static int MAP_WIDTH = 3000;
+    private static int MAP_HEIGHT = 2000;
+
+    // if forward is true, check forward displacement, else backward
+    public boolean isDisplacementPossible(boolean forward) {
+        double newX;
+        double newY;
+        if (forward) {
+            newX = myX + Parameters.teamASecondaryBotSpeed * Math.cos(getHeading());
+            newY = myY + Parameters.teamASecondaryBotSpeed * Math.sin(getHeading());
+        } else {
+            newX = myX - Parameters.teamASecondaryBotSpeed * Math.cos(getHeading());
+            newY = myY - Parameters.teamASecondaryBotSpeed * Math.sin(getHeading());
+        }
+        return (newX >= Parameters.teamASecondaryBotRadius && newX <= MAP_WIDTH - Parameters.teamASecondaryBotRadius && newY >= Parameters.teamASecondaryBotRadius && newY <= (double)MAP_HEIGHT - Parameters.teamASecondaryBotRadius);
+    }
+
     public void myMove() {
+        if (isDisplacementPossible(true)) {
+            if (taskQueue.getFirst().task == Task.MOVE_A_BIT) {
+                // Bypass object too close check when moving a bit
+                updateOdometryAfterMove(true);
+                move();
+                return;
+            }
 
-        if (doTaskQueueContains(Task.MOVE_A_BIT)){
-            sendLogMessage("Another MOVE_A_BIT in queue, not moving to avoid conflicts.");
-            updateOdometryAfterMove();
+            if (isObjectTooClose()) {
+                sendLogMessage("Object too close! Turn away and move.");
+                return;
+            }
+
+            if (detectFront().getObjectType() == IFrontSensorResult.Types.WALL) {
+                sendLogMessage("Wall detected ahead! Stopping movement.");
+                return;
+            }
+
+            updateOdometryAfterMove(true);
             move();
+        }
+    }
+
+    private boolean isObjectTooCloseBehind() {
+        for (IRadarResult obj : detectRadar()) {
+            if (obj.getObjectType() == IRadarResult.Types.BULLET) continue;
+            if (obj.getObjectDistance() <= (Parameters.teamASecondaryBotRadius + obj.getObjectRadius()) * 1.4) {
+                // Ally too close behind, turn left or right then move a bit forward
+                taskQueue.clear();
+                taskQueue.addFirst(new QueuedTask(Task.ROAM_AND_AVOID_ATTACKS));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public void myMoveBack() {
+        if (!isDisplacementPossible(false)) return;
+
+        // Check if an object is too close behind
+        if (isObjectTooCloseBehind()) {
+            sendLogMessage("Object too close behind! Turning away and moving.");
             return;
         }
 
-        if (isAllyTooClose()) {
-            sendLogMessage("Ally too close! Turn away and move.");
-            return;
-        }
-
-        if (detectFront().getObjectType() == IFrontSensorResult.Types.WALL) {
-            sendLogMessage("Wall detected ahead! Stopping movement.");
-            return; // Do not move if obstacle ahead
-        }
-
-        updateOdometryAfterMove();
-        move();
+        updateOdometryAfterMove(false);
+        moveBack();
     }
 
     private boolean doTaskQueueContains(Task task){
@@ -222,27 +222,42 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
         return false;
     }
 
+    // Help determining optimal turn direction to avoid obstacle
+    private double getOptimalTurnDirection() {
+        IRadarResult closestObject = getRadarClosestObject();
+        if (closestObject == null) {
+            return 0; // No object detected
+        }
+        double objectDirection = closestObject.getObjectDirection();
 
-    private boolean isAllyTooClose() {
+        // If object is on the right, turn left; if on the left, turn right
+        double sideStep = (objectDirection >= 0) ? -Math.PI / 2 : Math.PI / 2;
+
+        return getHeading() + sideStep;
+    }
+
+    private IRadarResult getRadarClosestObject() {
+        IRadarResult closestObject = null;
+        double minDistance = Double.MAX_VALUE;
         for (IRadarResult obj : detectRadar()) {
-            if (obj.getObjectType() == IRadarResult.Types.TeamMainBot
-                    || obj.getObjectType() == IRadarResult.Types.TeamSecondaryBot) {
+            double distance = obj.getObjectDistance();
+            if (distance < minDistance) {
+                minDistance = distance;
+                closestObject = obj;
+            }
+        }
+        return closestObject;
+    }
 
-                if (obj.getObjectDistance() <= (Parameters.teamASecondaryBotRadius + obj.getObjectRadius()) * 1.5) {
-                    // Ally too close, turn away
-                    // Check if bot should be moving a bit
-                    for (QueuedTask task : taskQueue) {
-                        if (task.task == Task.MOVE_A_BIT) {
-                            taskQueue.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(5)));
-                            sendLogMessage("trying to move a bit to avoid ally");
-                            return true;
-                        }
-                    }
-                    double turnDirection = obj.getObjectDirection() + Math.PI; // Turn away
-                    taskQueue.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(2)));
-                    taskQueue.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(turnDirection)));
-                    return true;
-                }
+    private boolean isObjectTooClose() {
+        for (IRadarResult obj : detectRadar()) {
+            if (obj.getObjectType() == IRadarResult.Types.BULLET) continue;
+            if (obj.getObjectDistance() <= (Parameters.teamASecondaryBotRadius + obj.getObjectRadius()) * 2) {
+                // Ally too close, move a bit backward, then turn away
+                double targetHeading = getOptimalTurnDirection();
+                taskQueue.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetHeading)));
+                taskQueue.addFirst(new QueuedTask(Task.MOVE_BACK_A_BIT, new TaskAttribute(100)));
+                return true;
             }
         }
         return false;
@@ -252,8 +267,8 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
         if (getHealth() <= 0) {
             return;
         }
-
-        checkForEnemiesAndRespond();
+        if (!currentlyAvoidingEnnemy)
+            checkForEnemiesAndRespond();
 
         // Execute current task if any
         if (!taskQueue.isEmpty()) {
@@ -303,6 +318,18 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
         return Math.abs(dir1-dir2)< ANGLE_PRECISION;
     }
 
+    public void moveBackAbit() {
+        TaskAttribute currentTask = taskQueue.getFirst().attr;
+        if (currentTask.isTargetWaitingStepsReached()) {
+            taskQueue.removeFirst();
+            sendLogMessage("Move back a bit complete.");
+            callNextTask();
+        } else {
+            myMoveBack();
+            currentTask.incrementWaitingStep();
+        }
+    }
+
     // RENDEZ-VOUS logic
     // Checking for messages
     private boolean receiveMessage(String message) {
@@ -340,6 +367,7 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
     }
 
     private static final String FIGHTING_ENEMY_MESSAGE = "FIGHTING_ENEMY";
+    private boolean currentlyAvoidingEnnemy = false;
 
     public void checkForEnemiesAndRespond() {
         ArrayList<IRadarResult> radarResults = detectRadar();
@@ -348,23 +376,28 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
                     result.getObjectType() == IRadarResult.Types.OpponentSecondaryBot) {
                 // Enemy detected
                 double enemyDirection = result.getObjectDirection();
+                double absAngle = result.getObjectDirection();
                 double enemyDistance = result.getObjectDistance();
                 // Sends location to allie bots
-                double enemyX = myX + enemyDistance * Math.cos(enemyDirection);
-                double enemyY = myY + enemyDistance * Math.sin(enemyDirection);
+
+                double enemyX = myX + enemyDistance * Math.cos(absAngle);
+                double enemyY = myY + enemyDistance * Math.sin(absAngle);
                 String enemyMessage = FIGHTING_ENEMY_MESSAGE + ";" + enemyX + ";" + enemyY + ";" + myID;
                 broadcast(enemyMessage);
+                //System.out.println(myID + " currently at (" + myX + ", " + myY + ") while actual position is : " + (bot.getX()) + ", " + (bot.getY()));
+                //System.out.println(myID + " detected enemy at (" + enemyX + ", " + enemyY + ") and sent message.");
 
                 // 1/2 chance to turn perpendicularly left or right
-                double awayDirection = enemyDirection + Math.PI/2;
+                double awayDirection = enemyDirection + Math.PI + (Math.random() - 0.5) * Math.PI; // ∈ [-π/2, +π/2]
 
                 Parameters.Direction turnDirection = getOptimalTurnDirectionWithHysteresis(awayDirection);
                 if (turnDirection != null) {
                     taskQueue.clear();
                     taskQueue.addFirst(new QueuedTask(Task.ROAM_AND_AVOID_ATTACKS));
                     taskQueue.addFirst(new QueuedTask(Task.MOVE_FORWARD));
+                    taskQueue.add(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(20)));
                     taskQueue.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(awayDirection)));
-                    taskQueue.add(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(10)));
+                    currentlyAvoidingEnnemy = true;
                 }
             }
         }
@@ -373,6 +406,7 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
     // Roam, detect ennemies, then run back to spawn and retry
     public void roamAndAvoidAttacksBehavior() {
         // Checking for allied bot in radar
+        currentlyAvoidingEnnemy = false;
         ArrayList<IRadarResult> radarResults = detectRadar();
         for (IRadarResult result : radarResults) {
             if (result.getObjectType() == IRadarResult.Types.TeamMainBot ||
@@ -382,7 +416,7 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
                 double distance = result.getObjectDistance();
                 if (distance < (Parameters.teamASecondaryBotRadius + result.getObjectRadius()) * 1.1) {
                     // Too close turn away
-                    double awayDirection = myID.equals(SB1) ? result.getObjectDirection() + Math.PI / 2 : result.getObjectDirection() + Math.PI / 2;
+                    double awayDirection = result.getObjectDirection() + Math.PI;
                     Parameters.Direction turnDirection = getOptimalTurnDirectionWithHysteresis(awayDirection);
                     if (turnDirection != null) {
                         taskQueue.addFirst((new QueuedTask(Task.TURN_LEFT, new TaskAttribute(awayDirection))));

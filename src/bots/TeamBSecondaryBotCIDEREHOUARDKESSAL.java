@@ -9,6 +9,9 @@ import robotsimulator.Bot;
 import java.util.ArrayList;
 import java.util.Random;
 
+/**
+ * Detect cible s'eloigne et envoi position aux MainBots
+ */
 public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
     private enum State {
         EVADING,
@@ -66,7 +69,6 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
         fetchMainMessage(messages);
         if(state == State.EVADING) {
             if (evasionTimer > 0) {
-                System.out.println("Évasion en cours, temps restant : " + evasionTimer);
                 evasionTimer--;
                 myMove();
                 return;
@@ -292,7 +294,6 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
                 // 2. Calcul des coordonnées (Trigonométrie)
                 double enemyX = bot.getX() + r.getObjectDistance() * Math.cos(absoluteAngle);
                 double enemyY = bot.getY() + r.getObjectDistance() * Math.sin(absoluteAngle);
-                System.out.println("Ennemi détecté aux coordonnées : (" + enemyX + ", " + enemyY + ")");
                 // 3. Envoi du message à l'équipe
                 broadcast("SCOUT:" + enemyX + ":" + enemyY);
             }
@@ -334,7 +335,7 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
         IFrontSensorResult front = detectFront();
 
         // Si on détecte un MUR (et pas autre chose)
-        if (front.getObjectType() == IFrontSensorResult.Types.WALL) {
+        if (front.getObjectType() != IFrontSensorResult.Types.NOTHING) {
             // On tourne à GAUCHE
             this.targetHeading = normalizeAngle(getHeading() - (Math.PI / 2));
             //state = State.AVOID_WALL;
