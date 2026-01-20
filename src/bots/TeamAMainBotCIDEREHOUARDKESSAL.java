@@ -218,8 +218,32 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     private int waitBeforeShooting = 0;
     private static final int WAIT_STEPS_BEFORE_SHOOTING = 500;
 
+    private int stuckCounter = 0;
+    private static final int STUCK_THRESHOLD = 800;
+    private double previousCoordsX = -1;
+    private double previousCoordsY = -1;
+
+
     public void step() {
         waitBeforeShooting++;
+        // Check if stuck
+        if (Math.hypot(myX - previousCoordsX, myY - previousCoordsY) < 20.0) {
+            stuckCounter++;
+        }
+        if (stuckCounter > STUCK_THRESHOLD) {
+            sendLogMessage("Stuck detected: performing recovery maneuver.");
+            // Perform recovery maneuver
+            double recoveryHeading = normalizeAngle(getHeading() + (Math.random() * Math.PI * 2));
+            currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
+            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(recoveryHeading)));
+            currentTasks.addFirst(new QueuedTask(Task.MOVE_BACK_A_BIT, new TaskAttribute(100)));
+            stuckCounter = 0;
+            callNextTask();
+            return;
+        }
+        previousCoordsX = myX;
+        previousCoordsY = myY;
+
         // Correction d'odométrie à chaque step
         if (getHealth() <= 0) {
             return;
@@ -318,6 +342,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         if (currentTask.isTargetWaitingStepsReached()) {
             // Stop complete
             currentTasks.removeFirst();
+            //currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(currentTask.getShootingDirection() + (Math.PI / 2) * ((Math.random() < 0.5) ? 1 : -1))));
             sendLogMessage("Stop and shoot complete.");
             System.out.println("[" + myID + "] : "+ "Stop and shoot complete. calling next task : " + (currentTasks.isEmpty() ? "none" : currentTasks.getFirst().task));
             callNextTask();
@@ -423,6 +448,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             try {
                 double enemyX = Double.parseDouble(parts[1]);
                 double enemyY = Double.parseDouble(parts[2]);
+                double targetDirection = Math.atan2(enemyY - myY, enemyX - myX);
                 String reportingAllyID = parts[3];
                 System.out.println("[" + myID + "] : "  + "Received asking for help message from : " + reportingAllyID);
                 if ( computeDistanceTo(enemyX, enemyY) < Parameters.bulletRange - 100 || reportingAllyID.equals(allyAskingForHelpID) || !doCurrentTaskContain(Task.SHOOT_AND_HELP)) {
@@ -431,6 +457,8 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                     targetX = enemyX;
                     targetY = enemyY;
                     currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_HELP, new TaskAttribute(reportingAllyID)));
+                    currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetDirection)));
+                    allyAskingForHelpID = reportingAllyID;
                     callNextTask();
                     return true;
                 }
