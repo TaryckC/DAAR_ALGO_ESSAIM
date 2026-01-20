@@ -3,15 +3,12 @@ package bots;
 import characteristics.IFrontSensorResult;
 import characteristics.IRadarResult;
 import characteristics.Parameters;
-import robotsimulator.Brain;
 import robotsimulator.Bot;
+import robotsimulator.Brain;
 
 import java.util.ArrayList;
 import java.util.Random;
 
-/**
- * Detect cible s'eloigne et envoi position aux MainBots
- */
 public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
     private enum State {
         EVADING,
@@ -55,18 +52,51 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
         sendLogMessage("Scout: Mode Spotter (Pas de tir).");
         turningRight = gen.nextBoolean();
     }
+    public void moveAway(ArrayList<String> messages){
+        for(String msg : messages) {
+            if (msg.startsWith("MAIN_INFO:")) {
+                String[] parts = msg.split(":");
 
+                double dir = Double.parseDouble(parts[1]);
+                double mainX = Double.parseDouble(parts[2]);
+                double mainY = Double.parseDouble(parts[3]);
+
+                double myX = bot.getX();
+                double myY = bot.getY();
+
+                // distance = RacineCarrée( (x2-x1)² + (y2-y1)² )
+                double distance = Math.sqrt(Math.pow(mainX - myX, 2) + Math.pow(mainY - myY, 2));
+
+                // 3. Condition de proximité
+                if (distance < 350) {
+                    System.out.println("EVASION SCOUT ACTIVEE");
+                    // Ta logique d'évasion (déjà correcte)
+                    this.evasionHeading = normalizeAngle(dir + Math.PI / 2);
+                    this.state = State.EVADING;
+                    this.evasionTimer = EVASION_TIME;
+
+                    return; // On a trouvé une urgence, on arrête de lire les autres messages
+                } else {
+                }
+
+            }
+        }
+        turnTowards(this.evasionHeading);
+        move();
+    }
     @Override
     public void step() {
         if (getHealth() <= 0) return;
+
         if(checkWallTurnLeft()) {
             //return;
         }
 
+
         ArrayList<IRadarResult> radar = detectRadar();
         ArrayList<String > messages = fetchAllMessages();
+        moveAway(messages);
         scanEnvironment(radar);
-        fetchMainMessage(messages);
         if(state == State.EVADING) {
             if (evasionTimer > 0) {
                 evasionTimer--;
@@ -154,53 +184,6 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
         }*/
     }
 
-    // =========================================================
-    // OUTILS (MURS, AMIS, CIBLAGE)
-    // =========================================================
-
-    private boolean checkAndAvoidWalls() {
-        IFrontSensorResult front = detectFront();
-        if (evasiveManeuverTimer > 0) {
-            evasiveManeuverTimer--;
-            if (turningRight) stepTurn(Parameters.Direction.RIGHT);
-            else stepTurn(Parameters.Direction.LEFT);
-            moveBack();
-            return true;
-        }
-        if (front.getObjectType() != IFrontSensorResult.Types.NOTHING) {
-            evasiveManeuverTimer = 8 + gen.nextInt(8);
-            turningRight = gen.nextBoolean();
-            return true;
-        }
-        return false;
-    }
-
-    private boolean avoidBlockingMainBots(ArrayList<IRadarResult> radar) {
-        for (IRadarResult r : radar) {
-            if (r.getObjectType() == IRadarResult.Types.TeamMainBot) {
-                if (r.getObjectDistance() < DIST_FRIEND_TOO_CLOSE) {
-                    double dirMain = r.getObjectDirection();
-                    double fuiteRelatif = (normalizeAngle(dirMain) > 0) ?
-                            dirMain - (Math.PI / 2) :
-                            dirMain + (Math.PI / 2);
-
-                    double headingDesire = normalizeAngle(getHeading() + fuiteRelatif);
-                    double delta = normalizeAngle(headingDesire - getHeading());
-
-                    // Stop & Turn (Pour bien dégager la voie)
-                    if (Math.abs(delta) > 0.2) {
-                        if (delta > 0) stepTurn(Parameters.Direction.RIGHT);
-                        else stepTurn(Parameters.Direction.LEFT);
-                    } else {
-                        move();
-                    }
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
     private IRadarResult getBestTarget(ArrayList<IRadarResult> results) {
         IRadarResult best = null;
         double minDistance = Double.MAX_VALUE;
@@ -227,37 +210,6 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
         while (angle > Math.PI) angle -= 2 * Math.PI;
         while (angle < -Math.PI) angle += 2 * Math.PI;
         return angle;
-    }
-
-    private void fetchMainMessage(ArrayList<String> messages) {
-        for(String msg : messages) {
-            if (msg.startsWith("SECONDARY_BOT_DETECTED:")) {
-                String[] parts = msg.split(":");
-
-                double dir = Double.parseDouble(parts[1]);
-                double mainX = Double.parseDouble(parts[2]);
-                double mainY = Double.parseDouble(parts[3]);
-                // 2. Calcul de la distance (Théorème de Pythagore)
-                double myX = bot.getX();
-                double myY = bot.getY();
-
-                // distance = RacineCarrée( (x2-x1)² + (y2-y1)² )
-                double distance = Math.sqrt(Math.pow(mainX - myX, 2) + Math.pow(mainY - myY, 2));
-
-                // 3. Condition de proximité
-                if (distance < 100) {
-
-                    // Ta logique d'évasion (déjà correcte)
-                    this.targetHeading = normalizeAngle(dir + Math.PI / 2);
-                    this.state = State.EVADING;
-                    this.evasionTimer = EVASION_TIME;
-
-                    return; // On a trouvé une urgence, on arrête de lire les autres messages
-                } else {
-                }
-
-            }
-        }
     }
 
     public void myMove() {
@@ -295,7 +247,7 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
                 double enemyX = bot.getX() + r.getObjectDistance() * Math.cos(absoluteAngle);
                 double enemyY = bot.getY() + r.getObjectDistance() * Math.sin(absoluteAngle);
                 // 3. Envoi du message à l'équipe
-                broadcast("SCOUT:" + enemyX + ":" + enemyY);
+                broadcast("SCOUT:" + enemyX + ":" + enemyY+":"+r.getObjectType());
             }
         }
     }
@@ -346,4 +298,5 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
         // Sinon, on n'a rien fait
         return false;
     }
+
 }

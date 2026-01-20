@@ -216,33 +216,11 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     }
 
     private int waitBeforeShooting = 0;
-    private static final int WAIT_STEPS_BEFORE_SHOOTING = 500;
-
-    private int stuckCounter = 0;
-    private static final int STUCK_THRESHOLD = 800;
-    private double previousCoordsX = -1;
-    private double previousCoordsY = -1;
+    private static final int WAIT_STEPS_BEFORE_SHOOTING = 750;
 
 
     public void step() {
         waitBeforeShooting++;
-        // Check if stuck
-        if (Math.hypot(myX - previousCoordsX, myY - previousCoordsY) < 20.0) {
-            stuckCounter++;
-        }
-        if (stuckCounter > STUCK_THRESHOLD) {
-            sendLogMessage("Stuck detected: performing recovery maneuver.");
-            // Perform recovery maneuver
-            double recoveryHeading = normalizeAngle(getHeading() + (Math.random() * Math.PI * 2));
-            currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
-            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(recoveryHeading)));
-            currentTasks.addFirst(new QueuedTask(Task.MOVE_BACK_A_BIT, new TaskAttribute(100)));
-            stuckCounter = 0;
-            callNextTask();
-            return;
-        }
-        previousCoordsX = myX;
-        previousCoordsY = myY;
 
         // Correction d'odométrie à chaque step
         if (getHealth() <= 0) {
@@ -266,8 +244,9 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         }
 
         ArrayList<String> messages = this.fetchAllMessages();
-        for (String message : messages) {
-            if (receiveMessage(message)) {
+        // Starts with the latest message
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if (receiveMessage(messages.get(i))) {
                 return;
             }
         }
@@ -452,13 +431,13 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 String reportingAllyID = parts[3];
                 System.out.println("[" + myID + "] : "  + "Received asking for help message from : " + reportingAllyID);
                 if ( computeDistanceTo(enemyX, enemyY) < Parameters.bulletRange - 100 || reportingAllyID.equals(allyAskingForHelpID) || !doCurrentTaskContain(Task.SHOOT_AND_HELP)) {
+                    currentTasks.clear();
                     // Then update target coordinates
                     sendLogMessage("Ally reported enemy at (" + enemyX + ", " + enemyY + "). Heading there.");
                     targetX = enemyX;
                     targetY = enemyY;
+                    currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
                     currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_HELP, new TaskAttribute(reportingAllyID)));
-                    currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(targetDirection)));
-                    allyAskingForHelpID = reportingAllyID;
                     callNextTask();
                     return true;
                 }
@@ -538,7 +517,8 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         // Check if the enemy is behind an obstacle (wreck in the bullet path)
         if (distanceToEnemy != -1) {
             for (IRadarResult obj : detectRadar()) {
-                if (obj.getObjectType() == IRadarResult.Types.Wreck) {
+                if (obj.getObjectType() == IRadarResult.Types.Wreck || obj.getObjectType() == IRadarResult.Types.TeamMainBot ||
+                        obj.getObjectType() == IRadarResult.Types.TeamSecondaryBot) {
                     double d = obj.getObjectDistance();
                     double r = obj.getObjectRadius();
 
