@@ -162,7 +162,27 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
             newX = myX - Parameters.teamASecondaryBotSpeed * Math.cos(getHeading());
             newY = myY - Parameters.teamASecondaryBotSpeed * Math.sin(getHeading());
         }
-        return (newX >= Parameters.teamASecondaryBotRadius && newX <= MAP_WIDTH - Parameters.teamASecondaryBotRadius && newY >= Parameters.teamASecondaryBotRadius && newY <= (double)MAP_HEIGHT - Parameters.teamASecondaryBotRadius);
+
+        boolean cond1 = (newX >= Parameters.teamASecondaryBotRadius && newX <= MAP_WIDTH - Parameters.teamASecondaryBotRadius && newY >= Parameters.teamASecondaryBotRadius && newY <= (double)MAP_HEIGHT - Parameters.teamASecondaryBotRadius);
+
+        for(IRadarResult obstacle : detectRadar()) {
+            if (obstacle.getObjectType() == IRadarResult.Types.BULLET) {
+                continue;
+            }
+            else {
+                double absAngle = obstacle.getObjectDirection();
+                double enemyDistance = obstacle.getObjectDistance();
+
+                double obstacleX = myX + enemyDistance * Math.cos(absAngle);
+                double obstacleY = myY + enemyDistance * Math.sin(absAngle);
+                boolean cond2 = ((newX - obstacleX) * (newX - obstacleX) + (newY - obstacleY) * (newY - obstacleY) < (Parameters.teamASecondaryBotRadius + obstacle.getObjectRadius()) * (Parameters.teamASecondaryBotRadius + obstacle.getObjectRadius()));
+                if (cond2) {
+                    return false;
+                }
+            }
+        }
+
+        return cond1;
     }
 
     public void myMove() {
@@ -369,11 +389,37 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
     private static final String FIGHTING_ENEMY_MESSAGE = "FIGHTING_ENEMY";
     private boolean currentlyAvoidingEnnemy = false;
 
+    private IRadarResult getNearestEnemy(ArrayList<IRadarResult> enemies, int type) {
+        IRadarResult nearestEnemy = null;
+        double minDistance = Double.MAX_VALUE;
+        for (IRadarResult enemy : enemies) {
+            if (!isEnemyOfType(enemy, type)) {
+                continue;
+            }
+            double currentDistance = enemy.getObjectDistance();
+            if (currentDistance < minDistance) {
+                minDistance = currentDistance;
+                nearestEnemy = enemy;
+            }
+        }
+        return nearestEnemy;
+    }
+
+    private boolean isEnemyOfType(IRadarResult enemy, int type) {
+        return switch (type) {
+            case 0 ->
+                    enemy.getObjectType() == IRadarResult.Types.OpponentMainBot || enemy.getObjectType() == IRadarResult.Types.OpponentSecondaryBot;
+            case 1 -> enemy.getObjectType() == IRadarResult.Types.OpponentMainBot;
+            case 2 -> enemy.getObjectType() == IRadarResult.Types.OpponentSecondaryBot;
+            default -> false;
+        };
+    }
+
     public void checkForEnemiesAndRespond() {
         ArrayList<IRadarResult> radarResults = detectRadar();
-        for (IRadarResult result : radarResults) {
-            if (result.getObjectType() == IRadarResult.Types.OpponentMainBot ||
-                    result.getObjectType() == IRadarResult.Types.OpponentSecondaryBot) {
+        // Get Nearest enemy and broadcast its position
+        IRadarResult result = getNearestEnemy(radarResults, 0);
+        if (result != null) {
                 // Enemy detected
                 double enemyDirection = result.getObjectDirection();
                 double absAngle = result.getObjectDirection();
@@ -400,7 +446,6 @@ public class TeamASecondaryBotCIDEREHOUARDKESSAL extends Brain {
                     currentlyAvoidingEnnemy = true;
                 }
             }
-        }
     }
 
     // Roam, detect ennemies, then run back to spawn and retry

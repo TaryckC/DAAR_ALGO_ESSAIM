@@ -5,6 +5,7 @@ import characteristics.IRadarResult;
 import characteristics.Parameters;
 import robotsimulator.Bot;
 import robotsimulator.Brain;
+import robotsimulator.Bullet;
 
 import java.util.ArrayList;
 import java.util.LinkedList;
@@ -16,7 +17,6 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
     private static final String MB3 = "Main-bot-3";
 
     private static final String FIGHTING_ENEMY_MESSAGE = "FIGHTING_ENEMY";
-    private static final String NOT_FIGHTING_ENEMY_MESSAGE = "NO_ENEMY_DETECTED";
 
     /**
      * @param attr null si pas besoin
@@ -220,7 +220,6 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
     public void step() {
         waitBeforeShooting++;
-        System.out.println( myID + ":" + "Do position match with actual : " + (myX == bot.getX() && myY == bot.getY()) + " | current task: " + ((!currentTasks.isEmpty()) ? currentTasks.getFirst().task : "None"));
         // Correction d'odométrie à chaque step
         if (getHealth() <= 0) {
             return;
@@ -228,6 +227,17 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
 
         // Shoots at nearest enemy if any
         if (attackNearestEnemy()) {
+            // Broadcast position of enemy to allies
+            IRadarResult nearestEnemy = getNearestEnemy(detectRadar(), 0);
+            // Enemy detected
+            double absAngle = nearestEnemy.getObjectDirection();
+            double enemyDistance = nearestEnemy.getObjectDistance();
+            // Sends location to allie bots
+
+            double enemyX = myX + enemyDistance * Math.cos(absAngle);
+            double enemyY = myY + enemyDistance * Math.sin(absAngle);
+            String enemyMessage = FIGHTING_ENEMY_MESSAGE + ";" + enemyX + ";" + enemyY + ";" + myID;
+            broadcast(enemyMessage);
             return;
         }
 
@@ -283,7 +293,7 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
         if (shootOrAdvance % 2 == 0) {
             shootOrAdvance += 1;
             // Shoots randomly toward the target direction
-            myFire(getHeading() + (Math.random() - 0.5) * Math.PI / 6, -1);
+            myFire(getHeading() + (Math.random() - 0.5) * Math.PI / 6, -1, false);
         } else {
             shootOrAdvance -= 1;
             headTowardCoord();
@@ -309,9 +319,10 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             // Stop complete
             currentTasks.removeFirst();
             sendLogMessage("Stop and shoot complete.");
+            System.out.println("[" + myID + "] : "+ "Stop and shoot complete. calling next task : " + (currentTasks.isEmpty() ? "none" : currentTasks.getFirst().task));
             callNextTask();
         } else {
-            myFire(currentTask.getShootingDirection(), currentTask.getDistanceToEnemy());
+            myFire(currentTask.getShootingDirection(), currentTask.getDistanceToEnemy(), false);
             currentTask.incrementWaitingStep();
         }
     }
@@ -399,14 +410,11 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 nearestEnemy = enemy;
             }
         }
-        if (nearestEnemy != null) {
-            // No nearest enemy found
-            broadcast(NOT_FIGHTING_ENEMY_MESSAGE + ";" + myID);
-        }
         return nearestEnemy;
     }
-
     // --- nouvelles méthodes pour gestion RDV / déplacement en ligne droite ---
+
+    private String allyAskingForHelpID = null;
 
     private boolean  receiveMessage(String message) {
         String[] parts = message.split(";");
@@ -416,34 +424,18 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                 double enemyX = Double.parseDouble(parts[1]);
                 double enemyY = Double.parseDouble(parts[2]);
                 String reportingAllyID = parts[3];
-                // If no enemy detected, head toward the reported coordinates
-                ArrayList<IRadarResult> objects = this.detectRadar();
-                IRadarResult nearestEnemy = getNearestEnemy(objects, 0);
-                if (nearestEnemy == null) {
-                    if (!doCurrentTaskContain(Task.SHOOT_AND_HELP)) {
-                        // Then update target coordinates
-                        sendLogMessage("Ally reported enemy at (" + enemyX + ", " + enemyY + "). Heading there.");
-                        targetX = enemyX;
-                        targetY = enemyY;
-                        currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_HELP, new TaskAttribute(reportingAllyID)));
-                        callNextTask();
-                        return true;
-                    }
+                System.out.println("[" + myID + "] : "  + "Received asking for help message from : " + reportingAllyID);
+                if ( computeDistanceTo(enemyX, enemyY) < Parameters.bulletRange - 100 || reportingAllyID.equals(allyAskingForHelpID) || !doCurrentTaskContain(Task.SHOOT_AND_HELP)) {
+                    // Then update target coordinates
+                    sendLogMessage("Ally reported enemy at (" + enemyX + ", " + enemyY + "). Heading there.");
+                    targetX = enemyX;
+                    targetY = enemyY;
+                    currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_HELP, new TaskAttribute(reportingAllyID)));
+                    callNextTask();
+                    return true;
                 }
             } catch (NumberFormatException e) {
                 sendLogMessage("Invalid fighting enemy message format.");
-            }
-        }
-
-        if (parts[0].equals(NOT_FIGHTING_ENEMY_MESSAGE) && parts.length == 2) {
-            String reportingAllyID = parts[1];
-            // If currently in SHOOT_AND_HELP task targeting this ally, stop it
-            if (!currentTasks.isEmpty() && currentTasks.getFirst().task == Task.SHOOT_AND_HELP) {
-                TaskAttribute currentTaskAttr = currentTasks.getFirst().attr;
-                if (currentTaskAttr.allyId != null && currentTaskAttr.allyId.equals(reportingAllyID)) {
-                    currentTasks.clear();
-                    currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
-                }
             }
         }
         return false;
@@ -472,20 +464,20 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
             // Advance and shoot
             shootAndAdvanceCounter += 1;
             if (shootAndAdvanceCounter % 2 == 0) {
-                myFire(getHeading() + (Math.random() - 0.5) * Math.PI / 6, -1);
+                myFire(getHeading() + (Math.random() - 0.5) * Math.PI / 6, -1, false);
             } else {
                 myMove();
             }
         }
     }
 
-    public void myFire(double direction, double distanceToEnemy) {
+    public void myFire(double direction, double distanceToEnemy, boolean didIdetectEnemy) {
         if (waitBeforeShooting < WAIT_STEPS_BEFORE_SHOOTING) {
             return;
         }
 
         // Calculate enemy coordinates (direction is RELATIVE from radar -> convert to absolute)
-        if (distanceToEnemy != -1) {
+        if (didIdetectEnemy) {
             double absDir = normalizeAngle(getHeading() + direction);
             double enemyX = myX + distanceToEnemy * Math.cos(absDir);
             double enemyY = myY + distanceToEnemy * Math.sin(absDir);
@@ -534,14 +526,12 @@ public class TeamAMainBotCIDEREHOUARDKESSAL extends Brain {
                         sendLogMessage("Enemy behind wreck: repositioning for a clearer shot.");
 
                         // Avoid stacking infinite reposition tasks
-                        if (!doCurrentTaskContain(Task.TURN) && !doCurrentTaskContain(Task.MOVE_A_BIT) && !doCurrentTaskContain(Task.GO_AROUND_OBJECT)) {
-                            // Move to the side opposite to the obstacle's lateral position
-                            double sign = (lateral >= 0) ? -1.0 : 1.0;
-                            double delta = sign * (Math.PI / 6);
+                        // Move to the side opposite to the obstacle's lateral position
+                        double sign = (lateral >= 0) ? -1.0 : 1.0;
+                        double delta = sign * (Math.PI / 6);
 
-                            currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(50)));
-                            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(normalizeAngle(getHeading() + delta))));
-                        }
+                        currentTasks.addFirst(new QueuedTask(Task.MOVE_A_BIT, new TaskAttribute(50)));
+                        currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(normalizeAngle(getHeading() + delta))));
                         return; // Abort fire for this step
                     }
                 }
@@ -569,6 +559,7 @@ private void headTowardCoord() {
             // Aim at the given coordinates and shoot
             currentTasks.addFirst(new QueuedTask(Task.SHOOT_AND_ADVANCE));
             currentTasks.addFirst(new QueuedTask(Task.STOP_AND_SHOOT, new TaskAttribute(directionToTarget, distance, 200)));
+            currentTasks.addFirst(new QueuedTask(Task.TURN, new TaskAttribute(directionToTarget)));
             System.out.println("[" + myID + "]" + "Shooting toward : " + directionToTarget + " distance " + distance);
             // Turn toward the target coordinates
         }
@@ -597,7 +588,25 @@ private void headTowardCoord() {
             newX = myX - Parameters.teamAMainBotSpeed * Math.cos(getHeading());
             newY = myY - Parameters.teamAMainBotSpeed * Math.sin(getHeading());
         }
-        return (newX >= Parameters.teamAMainBotRadius && newX <= MAP_WIDTH - Parameters.teamAMainBotRadius && newY >= Parameters.teamAMainBotRadius && newY <= (double)MAP_HEIGHT - Parameters.teamAMainBotRadius);
+        boolean cond1 = (newX >= Parameters.teamAMainBotRadius && newX <= MAP_WIDTH - Parameters.teamAMainBotRadius && newY >= Parameters.teamAMainBotRadius && newY <= (double)MAP_HEIGHT - Parameters.teamAMainBotRadius);
+
+        for(IRadarResult obstacle : detectRadar()) {
+            if (obstacle.getObjectType() == IRadarResult.Types.BULLET) {
+                continue;
+            }
+            else {
+                double angle = obstacle.getObjectDirection();
+                double enemyDistance = obstacle.getObjectDistance();
+
+                double obstacleX = myX + enemyDistance * Math.cos(angle);
+                double obstacleY = myY + enemyDistance * Math.sin(angle);
+                boolean cond2 = ((newX - obstacleX) * (newX - obstacleX) + (newY - obstacleY) * (newY - obstacleY) < (Parameters.teamAMainBotRadius + obstacle.getObjectRadius()) * (Parameters.teamAMainBotRadius + obstacle.getObjectRadius()));
+                if (cond2) {
+                    return false;
+                }
+            }
+        }
+        return cond1;
     }
 
     // If a wall is detected in front avoid it by going somewhere in the opposite direction
@@ -611,15 +620,15 @@ private void headTowardCoord() {
     // Déplacement
     private void myMove() {
         if (isDisplacementPossible(true)) {
-            // Check if facing wall
-            if (detectFront().getObjectType() == IFrontSensorResult.Types.WALL) {
-                avoidWall();
+            if (currentTasks.getFirst().task == Task.MOVE_A_BIT) {
+                updateOdometryAfterMove(true);
+                move();
                 return;
             }
 
-            if (currentTasks.getFirst().task.equals(Task.MOVE_A_BIT)) {
-                updateOdometryAfterMove(true);
-                move();
+            // Check if facing wall
+            if (detectFront().getObjectType() == IFrontSensorResult.Types.WALL) {
+                avoidWall();
                 return;
             }
 
@@ -629,7 +638,6 @@ private void headTowardCoord() {
                 callNextTask();
                 return;
             }
-
             updateOdometryAfterMove(true);
             move();
         }
@@ -734,6 +742,7 @@ private void headTowardCoord() {
             // Move complete
             currentTasks.removeFirst();
             sendLogMessage("Move a bit complete.");
+            System.out.println( "[" + myID + "] : "+ "Move a bit complete. calling next task : " + (currentTasks.isEmpty() ? "none" : currentTasks.getFirst().task));
             callNextTask();
         } else {
             // If we're still blocked, change heading a bit and retry instead of ramming the wreck forever
@@ -758,7 +767,7 @@ private void headTowardCoord() {
         IFrontSensorResult front = detectFront();
         if (front.getObjectType() == IFrontSensorResult.Types.OpponentMainBot ||
                 front.getObjectType() == IFrontSensorResult.Types.OpponentSecondaryBot) {
-            myFire(getHeading(), -1);
+            myFire(getHeading(), -1, true);
             return true;
         }
 
@@ -769,7 +778,7 @@ private void headTowardCoord() {
             // Suppose there's no ally in front of us
             double direction = nearestEnemy.getObjectDirection();
             double distance = nearestEnemy.getObjectDistance();
-            myFire(direction, distance);
+            myFire(direction, distance, true);
             return true;
         }
         return false;
