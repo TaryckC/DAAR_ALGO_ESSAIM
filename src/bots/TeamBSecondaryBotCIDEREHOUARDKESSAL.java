@@ -69,7 +69,7 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
                 double distance = Math.sqrt(Math.pow(mainX - myX, 2) + Math.pow(mainY - myY, 2));
 
                 // 3. Condition de proximité
-                if (distance < 350) {
+                if (distance < 500) {
                     System.out.println("EVASION SCOUT ACTIVEE");
                     // Ta logique d'évasion (déjà correcte)
                     this.evasionHeading = normalizeAngle(dir + Math.PI / 2);

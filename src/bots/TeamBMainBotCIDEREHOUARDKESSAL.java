@@ -149,6 +149,7 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
 
             // Si on a trouvé un obstacle (robot ou mur détecté par radar)
             if (obstacle != null) {
+                System.out.println("object devant");
                 isAvoidingObstacles = true;
                 avoidTimer = 0;
 
@@ -165,11 +166,7 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
         }
         if(isAvoidingObstacles){
             avoidTimer++;
-            if(avoidTimer <50){
-                moveBack();
-            }
-
-            else if(avoidTimer < AVOID_DURATION){
+           if(avoidTimer < AVOID_DURATION){
                 myMove();
             }
             else{
@@ -582,7 +579,7 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
 
 
 
-    private IRadarResult getBlockingObjectMove(ArrayList<IRadarResult> radar) {
+/*    private IRadarResult getBlockingObjectMove(ArrayList<IRadarResult> radar) {
         // 1. Définition du Cône (Angle)
         // 30 degrés ~= 0.52 radians
         // 15 degrés ~= 0.26 radians
@@ -591,32 +588,83 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
 
         // 2. Définition de la distance de pertinence
         // Inutile d'éviter un obstacle qui est à l'autre bout de la map.
-        double MAX_DIST = 200;
+        double MAX_DIST = 100;
 
         IRadarResult closest = null;
         double minDist = Double.MAX_VALUE;
+        double dx = this.targetX - bot.getX();
+        double dy = this.targetY - bot.getY();
+        double dist = Math.sqrt(dx * dx + dy * dy);
+
+        // 2. Calcul de l'angle absolu vers la cible
+        double angleVersCible = Math.atan2(dy, dx);
 
         for (IRadarResult r : radar) {
 
             // 3. FILTRE TYPE : On ne veut éviter que les obstacles passifs ou amis
             if (r.getObjectType() == IRadarResult.Types.Wreck ||
                     r.getObjectType() == IRadarResult.Types.TeamSecondaryBot ) {
-                // 4. FILTRE ANGLE : Est-il devant moi ? (Dans le cône +/- SAFETY_ANGLE)
-                // getObjectDirection() donne l'angle relatif (0 = tout droit)
-                if (Math.abs(r.getObjectDirection()) < SAFETY_ANGLE) {
-                    // 5. FILTRE DISTANCE : Est-il assez proche pour être gênant ?
-                    if (r.getObjectDistance() < MAX_DIST) {
-                        // On garde le plus proche de tous les obstacles trouvés
-                        if (r.getObjectDistance() < minDist) {
-                            minDist = r.getObjectDistance();
-                            closest = r;
-                        }
-                    }
+                System.out.println("object detected");
+
+                if(r.getObjectDistance()>150) continue;
+                System.out.println("object detected for avoidance");
+
+                double objRadius = 0;
+
+
+                double distToObj = r.getObjectDistance();
+
+                // Angle Absolu de l'objet
+                double angleToObj = r.getObjectDirection();
+
+                // Différence entre l'angle de tir et l'angle de l'objet
+                double angleDiff = normalizeAngle(getHeading() + angleToObj);
+
+
+                if (isFacing(angleDiff)) {
+                    return r;
                 }
             }
         }
         return closest;
+    }*/
+private IRadarResult getBlockingObjectMove(ArrayList<IRadarResult> radar) {
+    // 1. Définition du Cône de sécurité (Angle)
+    // 0.5 radians ~= 30 degrés. C'est bien pour éviter de foncer dans un truc large.
+    double SAFETY_ANGLE = 0.40;
+
+    // 2. Distance max pour commencer l'évitement
+    double MAX_DIST = 150;
+
+    IRadarResult closest = null;
+    double minDist = Double.MAX_VALUE;
+
+    for (IRadarResult r : radar) {
+
+        // 3. FILTRE : On évite les Wrecks et les Alliés (Secondary)
+        if (r.getObjectType() == IRadarResult.Types.Wreck ||
+                r.getObjectType() == IRadarResult.Types.TeamSecondaryBot ) {
+
+            // 4. VERIFICATION ANGLE (Le cœur du problème)
+            // r.getObjectDirection() est l'angle RELATIF (0 = devant moi).
+            // On vérifie juste s'il est dans le cône devant nous.
+            // PAS BESOIN de getHeading() ici.
+            if (Math.abs(r.getObjectDirection()) < SAFETY_ANGLE) {
+
+                // 5. VERIFICATION DISTANCE
+                if (r.getObjectDistance() < MAX_DIST) {
+
+                    // On garde le plus proche (pour éviter celui qu'on va toucher en premier)
+                    if (r.getObjectDistance() < minDist) {
+                        minDist = r.getObjectDistance();
+                        closest = r;
+                    }
+                }
+            }
+        }
     }
+    return closest;
+}
     private double getRepulsionOffset(ArrayList<IRadarResult> radar) {
         double deviation = 0;
         double MIN_SEPARATION = 150; // Distance de confort (bulles perso)
