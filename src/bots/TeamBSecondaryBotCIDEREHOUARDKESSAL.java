@@ -68,7 +68,7 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
                 double distance = Math.sqrt(Math.pow(mainX - myX, 2) + Math.pow(mainY - myY, 2));
 
                 // 3. Condition de proximité
-                if (distance < 350) {
+                if (distance < 500) {
                     System.out.println("EVASION SCOUT ACTIVEE");
                     // Ta logique d'évasion (déjà correcte)
                     this.evasionHeading = normalizeAngle(dir + Math.PI / 2);
@@ -129,59 +129,6 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
             }
 
         }
-
-        /*
-        // 2. POLITESSE (Laisser passer les MainBots)
-        if (avoidBlockingMainBots(radar)) {
-            return;
-        }
-
-        // 3. OBSERVATION & BROADCAST
-        IRadarResult target = getBestTarget(radar);
-
-        if (target != null) {
-            // A. BROADCAST (C'est notre seule arme !)
-            double absAngle = getHeading() + target.getObjectDirection();
-            double enemyX = bot.getX() + target.getObjectDistance() * Math.cos(absAngle);
-            double enemyY = bot.getY() + target.getObjectDistance() * Math.sin(absAngle);
-            broadcast("TARGET:" + enemyX + ":" + enemyY);
-
-            // B. MOUVEMENT (Shadowing / Orbite)
-            double dist = target.getObjectDistance();
-            double dir = target.getObjectDirection(); // Angle relatif
-
-            if (dist < DIST_TOO_CLOSE) {
-                // Trop près ! DANGER -> On fuit à l'opposé
-                turnTowards(getHeading() + dir + Math.PI);
-                move();
-            }
-            else if (dist > DIST_TOO_FAR) {
-                // Trop loin ! On risque de le perdre -> On se rapproche
-                turnTowards(getHeading() + dir);
-                move();
-            }
-            else {
-                // Distance Parfaite (Zone Ninja) -> ON TOURNE AUTOUR
-                // On se déplace à 90° de l'ennemi.
-                // Ça permet de rester à distance tout en bougeant latéralement (dur à toucher).
-
-                double strafeAngle = Math.PI / 2; // 90 degrés
-
-                // Petit aléatoire pour ne pas être prévisible
-                if (gen.nextBoolean()) strafeAngle += 0.2;
-                else strafeAngle -= 0.2;
-
-                turnTowards(getHeading() + dir + strafeAngle);
-                move();
-            }
-            return;
-        }
-
-        // 4. EXPLORATION (Si personne en vue)
-        if (gen.nextInt(20) == 0) {
-            if (gen.nextBoolean()) stepTurn(Parameters.Direction.RIGHT);
-            else stepTurn(Parameters.Direction.LEFT);
-        }*/
     }
 
     private IRadarResult getBestTarget(ArrayList<IRadarResult> results) {
