@@ -46,8 +46,7 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
     private final static int LOCK_DURATION_SEC = 200;
     private final static int LOCK_DURATION_MAIN = 500;
 
-    private final static int AVOID_DURATION = 150;// On reste fixé 50 steps (environ 2-3 sec)
-    private final static double SAME_TARGET_THRESHOLD = 400.0;
+    private final static int AVOID_DURATION = 150;
 
     private int LOCK_DURATION = LOCK_DURATION_SEC;
     private int lockTimer = 0;
@@ -232,31 +231,20 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
         }
         aliveMainBot -= count;
     }
-    // =======================
-    // Helpers
-    // =======================
+
 
     private void moveToTarget() {
-        // 1. Calcul de la distance vers les coordonnées reçues (Scout)
         double dx = this.targetX - bot.getX();
         double dy = this.targetY - bot.getY();
         double dist = Math.sqrt(dx * dx + dy * dy);
 
-        // 2. Calcul de l'angle absolu vers la cible
         double angleVersCible = Math.atan2(dy, dx);
 
         double ofset = getRepulsionOffset(detectRadar());
         if (dist > 1000) {
-
-            // ON FONCE !
-            // On met à jour le cap pour myMove()
             this.targetHeading = angleVersCible+ofset;
-
-            // On utilise ta méthode de déplacement fluide
             myMove();
-
         }
-        // Si on est À PORTÉE (< 1000)
         else {
             if(state == State.MOVE_TO_TARGET && !lockCible){
                 state = State.ATTACK;
@@ -270,8 +258,6 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
                     lockCible = false;
                 }
             }
-
-
 
             performCombat(angleVersCible);
         }
@@ -440,17 +426,12 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
 
         // Si pas assez d'alliés dans la zone définie
         if (countAlliesMainRobotsInRange < aliveMainBot - 1) {
-            // On s'arrête
             leaderIsMoving = false;
-
-            // Petit debug pour voir pourquoi on s'arrête
-            // System.out.println("Leader: Wait... (Range: " + checkRange + ")");
 
             broadcast("LEADER_INFO:" + bot.getX() + ":" + bot.getY() + ":" + getHeading() + ":WAIT");
             return;
         }
         else {
-            // Tout le monde est là (selon la tolérance actuelle), on avance
             leaderIsMoving = true;
 
             leaderMoveTimer++;
@@ -503,7 +484,7 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
                     this.targetHeading = leaderHeading+repulsionOffset;
                     myMove();
                 }
-                return; // On suit le premier leader entendu
+                return;
             }
         }
     }
@@ -535,7 +516,6 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
         else {
             myX += Parameters.teamAMainBotSpeed * Math.cos(getHeading());
             myY += Parameters.teamAMainBotSpeed * Math.sin(getHeading());
-            // 2. On avance
             move();
         }
     }
@@ -543,10 +523,8 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
     private boolean checkWallTurnLeft() {
         IFrontSensorResult front = detectFront();
 
-        // Priorité absolue : Si JE touche un mur, JE tourne.
         if (front.getObjectType() == IFrontSensorResult.Types.WALL) {
             this.targetHeading = normalizeAngle(getHeading() - (Math.PI / 2));
-            // On prévient les autres
             broadcast("AVOID_WALL:"+targetHeading+":" + bot.getX() + ":" + bot.getY());
             return true;
         }
@@ -573,87 +551,26 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
                 }
             }
         }
-        return false; // Aucun message d'évitement traité
+        return false;
     }
 
-
-
-    /*    private IRadarResult getBlockingObjectMove(ArrayList<IRadarResult> radar) {
-            // 1. Définition du Cône (Angle)
-            // 30 degrés ~= 0.52 radians
-            // 15 degrés ~= 0.26 radians
-            // Une valeur de 0.35 (environ 20°) est un bon compromis pour la sécurité.
-            double SAFETY_ANGLE = 0.35;
-
-            // 2. Définition de la distance de pertinence
-            // Inutile d'éviter un obstacle qui est à l'autre bout de la map.
-            double MAX_DIST = 100;
-
-            IRadarResult closest = null;
-            double minDist = Double.MAX_VALUE;
-            double dx = this.targetX - bot.getX();
-            double dy = this.targetY - bot.getY();
-            double dist = Math.sqrt(dx * dx + dy * dy);
-
-            // 2. Calcul de l'angle absolu vers la cible
-            double angleVersCible = Math.atan2(dy, dx);
-
-            for (IRadarResult r : radar) {
-
-                // 3. FILTRE TYPE : On ne veut éviter que les obstacles passifs ou amis
-                if (r.getObjectType() == IRadarResult.Types.Wreck ||
-                        r.getObjectType() == IRadarResult.Types.TeamSecondaryBot ) {
-                    System.out.println("object detected");
-
-                    if(r.getObjectDistance()>150) continue;
-                    System.out.println("object detected for avoidance");
-
-                    double objRadius = 0;
-
-
-                    double distToObj = r.getObjectDistance();
-
-                    // Angle Absolu de l'objet
-                    double angleToObj = r.getObjectDirection();
-
-                    // Différence entre l'angle de tir et l'angle de l'objet
-                    double angleDiff = normalizeAngle(getHeading() + angleToObj);
-
-
-                    if (isFacing(angleDiff)) {
-                        return r;
-                    }
-                }
-            }
-            return closest;
-        }*/
     private IRadarResult getBlockingObjectMove(ArrayList<IRadarResult> radar) {
-        // 1. Définition du Cône de sécurité (Angle)
-        // 0.5 radians ~= 30 degrés. C'est bien pour éviter de foncer dans un truc large.
+
         double SAFETY_ANGLE = 0.40;
 
-        // 2. Distance max pour commencer l'évitement
-        double MAX_DIST = 150;
+        double MAX_DIST = 100;
 
         IRadarResult closest = null;
         double minDist = Double.MAX_VALUE;
 
         for (IRadarResult r : radar) {
 
-            // 3. FILTRE : On évite les Wrecks et les Alliés (Secondary)
             if (r.getObjectType() == IRadarResult.Types.Wreck ||
                     r.getObjectType() == IRadarResult.Types.TeamSecondaryBot ) {
-
-                // 4. VERIFICATION ANGLE (Le cœur du problème)
-                // r.getObjectDirection() est l'angle RELATIF (0 = devant moi).
-                // On vérifie juste s'il est dans le cône devant nous.
-                // PAS BESOIN de getHeading() ici.
                 if (Math.abs(r.getObjectDirection()) < SAFETY_ANGLE) {
 
-                    // 5. VERIFICATION DISTANCE
                     if (r.getObjectDistance() < MAX_DIST) {
 
-                        // On garde le plus proche (pour éviter celui qu'on va toucher en premier)
                         if (r.getObjectDistance() < minDist) {
                             minDist = r.getObjectDistance();
                             closest = r;
@@ -666,18 +583,16 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
     }
     private double getRepulsionOffset(ArrayList<IRadarResult> radar) {
         double deviation = 0;
-        double MIN_SEPARATION = 150; // Distance de confort (bulles perso)
-        double FORCE = 0.8; // Puissance de la répulsion (0.0 à 1.0)
+        double MIN_SEPARATION = 150;
+        double FORCE = 0.8;
 
         for (IRadarResult r : radar) {
-            // On ne regarde que les alliés (Main ou Secondary)
             if (r.getObjectType() == IRadarResult.Types.TeamMainBot ||
                     r.getObjectType() == IRadarResult.Types.TeamSecondaryBot) {
 
                 double dist = r.getObjectDistance();
 
                 if (dist < MIN_SEPARATION) {
-                    // Facteur d'urgence : 1.0 si très très près, 0.0 si à la limite
                     double urgency = (MIN_SEPARATION - dist) / MIN_SEPARATION;
 
                     // Si l'allié est à ma GAUCHE (angle > 0), je veux aller à DROITE (angle négatif)
@@ -699,34 +614,21 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
     }
 
 
-    /**
-     * Vérifie mathématiquement si un obstacle (Allié ou Epave) coupe la trajectoire de la balle.
-     * @param targetDistance La distance de l'ennemi que l'on vise
-     * @param fireAngle L'angle ABSOLU vers lequel on veut tirer
-     * @param radar Les données du radar
-     * @return true si le tir est bloqué
-     */
     private IRadarResult isLineOfFireBlocked(double targetDistance, double fireAngle, ArrayList<IRadarResult> radar) {
-        // Rayon de sécurité (Balle + Marge d'erreur)
-        // Si Parameters.bulletRadius n'existe pas, mets environ 5.0 ou 10.0
         double BULLET_SIZE = 5.0;
 
         for (IRadarResult obj : radar) {
-            // On ne vérifie que les obstacles : Alliés et Epaves
             if (obj.getObjectType() == IRadarResult.Types.TeamMainBot ||
                     obj.getObjectType() == IRadarResult.Types.TeamSecondaryBot ||
                     obj.getObjectType() == IRadarResult.Types.Wreck) {
 
-                // 1. Définir le rayon de l'obstacle (Hitbox)
                 double objRadius = 0;
                 if (obj.getObjectType() == IRadarResult.Types.TeamSecondaryBot) {
                     objRadius = Parameters.teamASecondaryBotRadius; // ou environ 20
                 } else {
-                    // MainBot et Wreck ont généralement la même taille
                     objRadius = Parameters.teamAMainBotRadius; // ou environ 30
                 }
 
-                // 2. Calculs Géométriques (Projection)
                 double distToObj = obj.getObjectDistance();
 
                 // Angle Absolu de l'objet
@@ -747,15 +649,14 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
                 // - Math.abs(lateral) < ... : L'objet est trop près de la ligne centrale du tir
                 if (forward > 0 && forward < targetDistance && Math.abs(lateral) < (objRadius + BULLET_SIZE)) {
 
-                    return obj; // Ne tire pas !
+                    return obj;
                 }
             }
         }
-        return null; // Voie libre
+        return null;
     }
 
     private void checkIfStuck() {
-        // Si on est déjà en train de se débloquer, on gère le timer
         if (isUnblocking) {
             unblockTimer++;
             if (unblockTimer > UNBLOCK_DURATION) {
@@ -768,12 +669,10 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
         // Calcul de la distance parcourue depuis le dernier step
         double distMoved = Math.sqrt(Math.pow(bot.getX() - lastX, 2) + Math.pow(bot.getY() - lastY, 2));
 
-        // Si on a bougé de moins de 1 pixel alors qu'on essayait de bouger
-        // (Note: on suppose qu'on essaie toujours de bouger sauf en état WAIT)
         if (distMoved < 0.6) {
             stuckCounter++;
         } else {
-            stuckCounter = 0; // On bouge bien, on reset le compteur
+            stuckCounter = 0;
         }
 
         // Si on est bloqué depuis trop longtemps
@@ -781,7 +680,6 @@ public class TeamBMainBotCIDEREHOUARDKESSAL extends Brain {
             isUnblocking = true;
             unblockTimer = 0;
 
-            // On choisit une direction totalement aléatoire pour casser la symétrie
             unblockHeading = rand.nextDouble() * 2 * Math.PI;
         }
 

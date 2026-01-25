@@ -29,9 +29,6 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
 
     // --- VARIABLES GESTION ---
     private Random gen = new Random();
-    private int evasiveManeuverTimer = 0;
-    private boolean turningRight = true;
-    private static final double DIST_FRIEND_TOO_CLOSE = 200;
     private final static double HEADING_PRECISION = 0.05;
 
 
@@ -50,7 +47,6 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
     @Override
     public void activate() {
         sendLogMessage("Scout: Mode Spotter (Pas de tir).");
-        turningRight = gen.nextBoolean();
     }
     public void moveAway(ArrayList<String> messages){
         for(String msg : messages) {
@@ -64,19 +60,15 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
                 double myX = bot.getX();
                 double myY = bot.getY();
 
-                // distance = RacineCarrée( (x2-x1)² + (y2-y1)² )
                 double distance = Math.sqrt(Math.pow(mainX - myX, 2) + Math.pow(mainY - myY, 2));
 
-                // 3. Condition de proximité
                 if (distance < 500) {
                     System.out.println("EVASION SCOUT ACTIVEE");
-                    // Ta logique d'évasion (déjà correcte)
                     this.evasionHeading = normalizeAngle(dir + Math.PI / 2);
                     this.state = State.EVADING;
                     this.evasionTimer = EVASION_TIME;
 
-                    return; // On a trouvé une urgence, on arrête de lire les autres messages
-                } else {
+                    return;
                 }
 
             }
@@ -91,7 +83,6 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
         if(checkWallTurnLeft()) {
             //return;
         }
-
 
         ArrayList<IRadarResult> radar = detectRadar();
         ArrayList<String > messages = fetchAllMessages();
@@ -160,12 +151,10 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
     }
 
     public void myMove() {
-        // 1. On s'oriente vers la direction cible
         if (!isHeadingReached(this.targetHeading)) {
 
             turnTowards(this.targetHeading);
         } else {
-            // 2. On avance
             move();
         }
     }
@@ -186,14 +175,10 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
         for (IRadarResult r : radar) {
             if (r.getObjectType() == IRadarResult.Types.OpponentSecondaryBot || r.getObjectType() == IRadarResult.Types.OpponentMainBot) {
 
-                // --- AJOUT : CALCUL ET ENVOI DE POSITION ---
-                // 1. Calcul de l'angle absolu de l'ennemi (Mon Angle + Angle Relatif Ennemi)
                 double absoluteAngle = r.getObjectDirection();
 
-                // 2. Calcul des coordonnées (Trigonométrie)
                 double enemyX = bot.getX() + r.getObjectDistance() * Math.cos(absoluteAngle);
                 double enemyY = bot.getY() + r.getObjectDistance() * Math.sin(absoluteAngle);
-                // 3. Envoi du message à l'équipe
                 broadcast("SCOUT:" + enemyX + ":" + enemyY+":"+r.getObjectType());
             }
         }
@@ -201,27 +186,19 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
 
     private int moveAroundTarget(IRadarResult target) {
         if (target == null) return 1;
-        // 1. COMMUNICATION (Vital pour l'équipe)
-        // On profite qu'on le voit pour crier sa position aux MainBots
         double absAngle = target.getObjectDirection();
         double enemyX = bot.getX() + target.getObjectDistance() * Math.cos(absAngle);
         double enemyY = bot.getY() + target.getObjectDistance() * Math.sin(absAngle);
 
         broadcast("TARGET:" + enemyX + ":" + enemyY);
-        // 2. CALCUL DE MOUVEMENT (Shadowing)
         double dist = target.getObjectDistance();
 
         double dirRelatif = target.getObjectDirection(); // Angle relatif
 
         if (dist < DIST_TOO_CLOSE) {
-            // CAS 1 : TROP PRÈS (< 350)
-            // Danger ! On fuit à l'opposé (Demi-tour)
-            // Angle actuel + Angle ennemi + PI (180°)
             return 2;
         }
         else if (dist > DIST_TOO_FAR) {
-            // CAS 2 : TROP LOIN (> 530)
-            // On risque de le perdre du radar -> On fonce sur lui
             this.targetHeading = normalizeAngle(getHeading() + dirRelatif);
             return 1;
         }
@@ -233,16 +210,12 @@ public class TeamBSecondaryBotCIDEREHOUARDKESSAL extends Brain {
     private boolean checkWallTurnLeft() {
         IFrontSensorResult front = detectFront();
 
-        // Si on détecte un MUR (et pas autre chose)
         if (front.getObjectType() != IFrontSensorResult.Types.NOTHING) {
-            // On tourne à GAUCHE
             this.targetHeading = normalizeAngle(getHeading() - (Math.PI / 2));
-            //state = State.AVOID_WALL;
-            // On retourne true pour dire "J'ai agi, arrête le tour"
+
             return true;
         }
 
-        // Sinon, on n'a rien fait
         return false;
     }
 
